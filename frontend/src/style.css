@@ -1,49 +1,95 @@
-/* ─── LNU Theme Tokens ─────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
 :root {
-  --lnu-navy:       #1A237E;
-  --lnu-navy-deep:  #0D1547;
+  --lnu-navy: #1A237E;
+  --lnu-navy-deep: #0D1547;
   --lnu-navy-light: #283593;
-  --lnu-gold:       #C9A84C;
+  --lnu-gold: #C9A84C;
   --lnu-gold-light: #F0D080;
-  --lnu-gold-pale:  #FDF6E3;
-  --lnu-bg:         #F9F8F4;
-  --lnu-success:    #2E7D32;
-  --lnu-danger:     #C62828;
-  --lnu-gray:       #ECEFF1;
-  --lnu-gray-dark:  #B0BEC5;
-  --lnu-text:       #0D1547;
+  --lnu-gold-pale: #FDF6E3;
+  --lnu-bg: #F9F8F4;
+  --lnu-success: #2E7D32;
+  --lnu-danger: #C62828;
+  --lnu-gray: #ECEFF1;
+  --lnu-gray-dark: #B0BEC5;
+  --lnu-text: #0D1547;
   --lnu-text-muted: #607080;
-  --lnu-white:      #FFFFFF;
-  --lnu-card-shadow: 0 2px 16px rgba(26,35,126,0.10);
-  --lnu-radius:     10px;
-  --lnu-radius-lg:  16px;
+  --lnu-white: #FFFFFF;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+
+  --shadow-sm: 0 8px 24px rgba(13, 21, 71, 0.08);
+  --shadow-md: 0 18px 42px rgba(13, 21, 71, 0.12);
+
+  --focus-ring: 0 0 0 3px rgba(26, 35, 126, 0.2);
 }
 
-/* ─── Reset & Base ──────────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;
-  margin: 0;
-  padding: 0;
 }
 
-html, body, #app {
+html,
+body,
+#app {
   height: 100%;
   min-height: 100vh;
+  margin: 0;
 }
 
 body {
-  font-family: 'Georgia', 'Times New Roman', serif;
-  background: var(--lnu-bg);
+  font-family: 'Plus Jakarta Sans', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background:
+    radial-gradient(circle at 8% 4%, rgba(26, 35, 126, 0.1), transparent 28%),
+    radial-gradient(circle at 92% 0%, rgba(201, 168, 76, 0.16), transparent 30%),
+    var(--lnu-bg);
   color: var(--lnu-text);
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
-  line-height: 1.6;
+  text-rendering: optimizeLegibility;
 }
 
-/* ─── Scrollbar ─────────────────────────────────────────────────── */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: var(--lnu-gray); }
-::-webkit-scrollbar-thumb { background: var(--lnu-navy-light); border-radius: 99px; }
+a {
+  color: inherit;
+}
 
-/* ─── Utility ───────────────────────────────────────────────────── */
-.fade-enter-active, .fade-leave-active { transition: opacity 0.25s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  background: rgba(201, 168, 76, 0.36);
+  color: var(--lnu-text);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(26, 35, 126, 0.28);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}

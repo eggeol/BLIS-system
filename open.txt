@@ -1,0 +1,7 @@
+# terminal 1 (project root)
+docker compose up -d
+
+# terminal 2
+cd frontend
+npm install
+npm run dev

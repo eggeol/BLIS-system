@@ -1,63 +1,40 @@
 <template>
-  <div class="auth-layout">
+  <div class="auth-shell">
+    <aside class="auth-brand">
+      <div class="brand-card">
+        <div class="brand-seal">
+          <GraduationCap :size="30" />
+        </div>
+        <p class="brand-label">LNU LLE Platform</p>
+        <h1>LLE Examination and Readiness System</h1>
+        <p class="brand-copy">
+          Access your reviewer workspace, take mock exams, and monitor your progress from one clean dashboard.
+        </p>
 
-    <!-- ── Left Brand Panel ─────────────────────────── -->
-    <aside class="brand-panel">
-      <div class="brand-overlay" />
-      <div class="brand-content">
-        <!-- Seal placeholder -->
-        <div class="seal-ring">
-          <div class="seal-inner">
-            <span class="seal-torch">🕯</span>
+        <div class="brand-list">
+          <div class="brand-item" v-for="item in highlights" :key="item.text">
+            <component :is="item.icon" :size="16" class="brand-item-icon" />
+            <span>{{ item.text }}</span>
           </div>
         </div>
-
-        <h1 class="brand-title">Leyte Normal<br/>University</h1>
-        <p class="brand-sub">LLE Review &amp; Examination System</p>
-
-        <div class="brand-divider" />
-
-        <div class="brand-stats">
-          <div class="bstat">
-            <span class="bstat-num">2,400+</span>
-            <span class="bstat-label">Examinees</span>
-          </div>
-          <div class="bstat-sep" />
-          <div class="bstat">
-            <span class="bstat-num">84%</span>
-            <span class="bstat-label">Pass Rate</span>
-          </div>
-          <div class="bstat-sep" />
-          <div class="bstat">
-            <span class="bstat-num">1921</span>
-            <span class="bstat-label">Est.</span>
-          </div>
-        </div>
-
-        <p class="brand-motto">Integrity · Excellence · Service</p>
       </div>
     </aside>
 
-    <!-- ── Right Form Panel ─────────────────────────── -->
-    <main class="form-panel">
-      <div class="form-card">
+    <main class="auth-main">
+      <section class="auth-card">
+        <header class="auth-header">
+          <p class="eyebrow">Welcome back</p>
+          <h2>Sign in to continue</h2>
+          <p class="subtitle">Use your registered account to open your LLE workspace.</p>
+        </header>
 
-        <div class="form-header">
-          <h2 class="form-title">Welcome back</h2>
-          <p class="form-desc">Sign in to continue your LLE review</p>
-        </div>
-
-        <!-- Error Banner -->
-        <div v-if="apiError" class="alert alert-danger">
-          {{ apiError }}
-        </div>
+        <div v-if="apiError" class="alert alert-danger">{{ apiError }}</div>
 
         <form class="auth-form" @submit.prevent="handleSubmit">
-
-          <div class="field-group">
-            <label class="field-label">Email Address</label>
+          <label class="field-group">
+            <span class="field-label">Email address</span>
             <div class="field-wrap">
-              <span class="field-icon">✉</span>
+              <Mail :size="17" class="field-icon" />
               <input
                 v-model="form.email"
                 type="email"
@@ -66,54 +43,63 @@
                 autocomplete="email"
               />
             </div>
-          </div>
+          </label>
 
-          <div class="field-group">
-            <label class="field-label">Password</label>
+          <label class="field-group">
+            <span class="field-label">Password</span>
             <div class="field-wrap">
-              <span class="field-icon">🔒</span>
+              <LockKeyhole :size="17" class="field-icon" />
               <input
                 v-model="form.password"
                 :type="showPw ? 'text' : 'password'"
-                class="field-input"
+                class="field-input field-input-with-toggle"
                 placeholder="Enter your password"
                 autocomplete="current-password"
               />
               <button type="button" class="field-toggle" @click="showPw = !showPw">
-                {{ showPw ? '🙈' : '👁' }}
+                <EyeOff v-if="showPw" :size="16" />
+                <Eye v-else :size="16" />
               </button>
             </div>
-          </div>
+          </label>
 
-          <div class="form-row-between">
-            <label class="remember-label">
-              <input type="checkbox" v-model="form.remember" class="remember-check" />
+          <div class="form-row">
+            <label class="remember-wrap">
+              <input type="checkbox" v-model="form.remember" />
               <span>Remember me</span>
             </label>
-            <a href="#" class="link-muted">Forgot password?</a>
+            <router-link to="/forgot-password" class="inline-link">Forgot password?</router-link>
           </div>
 
-          <button type="submit" class="btn-primary" :class="{ loading: isLoading }">
+          <button type="submit" class="submit-btn" :disabled="isLoading">
             <span v-if="!isLoading">Sign In</span>
             <span v-else class="spinner" />
           </button>
-
         </form>
 
-        <p class="form-footer-text">
-          Don't have an account?
-          <router-link to="/register" class="link-gold">Create one here</router-link>
+        <p class="auth-footer">
+          No account yet?
+          <router-link to="/register" class="inline-link strong">Create one</router-link>
         </p>
-
-      </div>
+      </section>
     </main>
-
   </div>
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import {
+  BarChart3,
+  ClipboardCheck,
+  Eye,
+  EyeOff,
+  GraduationCap,
+  LockKeyhole,
+  Mail,
+  ShieldCheck,
+} from 'lucide-vue-next'
 
 const form = reactive({ email: '', password: '', remember: false })
 const showPw = ref(false)
@@ -121,18 +107,28 @@ const isLoading = ref(false)
 const apiError = ref('')
 
 const auth = useAuthStore()
+const router = useRouter()
+
+const highlights = [
+  { icon: ClipboardCheck, text: 'Practice tests and exam drills' },
+  { icon: BarChart3, text: 'Performance analytics by subject' },
+  { icon: ShieldCheck, text: 'Secure role-based access control' },
+]
 
 async function handleSubmit() {
   apiError.value = ''
+
   if (!form.email || !form.password) {
     apiError.value = 'Email and password are required.'
     return
   }
+
   isLoading.value = true
   try {
     await auth.login(form.email, form.password)
-  } catch (e) {
-    apiError.value = e.response?.data?.message ?? 'Invalid email or password. Please try again.'
+    await router.push('/dashboard')
+  } catch (error) {
+    apiError.value = error.response?.data?.message ?? 'Invalid email or password. Please try again.'
   } finally {
     isLoading.value = false
   }
@@ -140,303 +136,316 @@ async function handleSubmit() {
 </script>
 
 <style scoped>
-/* ── Layout ──────────────────────────────── */
-.auth-layout {
-  display: flex;
+.auth-shell {
   min-height: 100vh;
-}
-
-/* ── Brand Panel ─────────────────────────── */
-.brand-panel {
-  position: relative;
-  width: 420px;
-  flex-shrink: 0;
-  background: var(--lnu-navy);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.brand-overlay {
-  position: absolute;
-  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(320px, 460px) 1fr;
   background:
-    radial-gradient(ellipse at 20% 20%, rgba(201,168,76,0.18) 0%, transparent 60%),
-    radial-gradient(ellipse at 80% 80%, rgba(201,168,76,0.10) 0%, transparent 50%);
-  pointer-events: none;
+    radial-gradient(circle at 12% 8%, rgba(26, 35, 126, 0.12), transparent 30%),
+    radial-gradient(circle at 88% 92%, rgba(201, 168, 76, 0.25), transparent 34%),
+    var(--lnu-bg);
 }
 
-/* Decorative circles */
-.brand-panel::before,
-.brand-panel::after {
-  content: '';
-  position: absolute;
-  border-radius: 50%;
-  border: 1px solid rgba(201,168,76,0.15);
-}
-.brand-panel::before { width: 500px; height: 500px; top: -120px; right: -180px; }
-.brand-panel::after  { width: 350px; height: 350px; bottom: -80px; left: -120px; }
-
-.brand-content {
-  position: relative;
-  z-index: 1;
-  text-align: center;
-  padding: 40px 32px;
-}
-
-.seal-ring {
-  width: 100px;
-  height: 100px;
-  border-radius: 50%;
-  border: 3px solid var(--lnu-gold);
+.auth-brand {
+  background: linear-gradient(155deg, var(--lnu-navy-deep), var(--lnu-navy));
+  padding: 42px 34px;
+  color: var(--lnu-white);
   display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 auto 24px;
-  background: rgba(201,168,76,0.08);
-  box-shadow: 0 0 32px rgba(201,168,76,0.20);
 }
 
-.seal-inner {
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
-  background: rgba(201,168,76,0.15);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.seal-torch { font-size: 32px; }
-
-.brand-title {
-  font-size: 26px;
-  font-weight: bold;
-  color: var(--lnu-gold-light);
-  line-height: 1.25;
-  margin-bottom: 8px;
-  letter-spacing: 0.5px;
-}
-
-.brand-sub {
-  font-size: 13px;
-  color: rgba(255,255,255,0.55);
-  margin-bottom: 28px;
-}
-
-.brand-divider {
-  width: 60px;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--lnu-gold), transparent);
-  margin: 0 auto 28px;
-}
-
-.brand-stats {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 20px;
-  margin-bottom: 28px;
-}
-
-.bstat { text-align: center; }
-.bstat-num {
-  display: block;
-  font-size: 22px;
-  font-weight: bold;
-  color: var(--lnu-gold);
-}
-.bstat-label {
-  display: block;
-  font-size: 10px;
-  color: rgba(255,255,255,0.45);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-.bstat-sep {
-  width: 1px;
-  height: 36px;
-  background: rgba(201,168,76,0.25);
-}
-
-.brand-motto {
-  font-size: 11px;
-  color: rgba(201,168,76,0.6);
-  letter-spacing: 2px;
-  text-transform: uppercase;
-}
-
-/* ── Form Panel ──────────────────────────── */
-.form-panel {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 40px 24px;
-  background: var(--lnu-bg);
-}
-
-.form-card {
+.brand-card {
+  border: 1px solid rgba(240, 208, 128, 0.25);
+  border-radius: var(--radius-lg);
+  padding: 30px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0));
+  box-shadow: var(--shadow-md);
   width: 100%;
-  max-width: 420px;
+  display: flex;
+  flex-direction: column;
 }
 
-.form-header { margin-bottom: 28px; }
+.brand-seal {
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(240, 208, 128, 0.16);
+  color: var(--lnu-gold-light);
+  border: 1px solid rgba(240, 208, 128, 0.35);
+}
 
-.form-title {
+.brand-label {
+  margin-top: 22px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(240, 208, 128, 0.88);
+}
+
+.brand-card h1 {
+  margin: 10px 0 0;
+  font-size: 31px;
+  line-height: 1.2;
+  color: var(--lnu-gold-light);
+}
+
+.brand-copy {
+  margin-top: 14px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+}
+
+.brand-list {
+  margin-top: auto;
+  display: grid;
+  gap: 12px;
+  padding-top: 28px;
+}
+
+.brand-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--radius-md);
+  padding: 11px 12px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.brand-item-icon {
+  color: var(--lnu-gold-light);
+  flex-shrink: 0;
+}
+
+.auth-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 42px 24px;
+  background:
+    radial-gradient(circle at top right, rgba(26, 35, 126, 0.12), transparent 40%),
+    radial-gradient(circle at bottom left, rgba(201, 168, 76, 0.2), transparent 42%);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 460px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(253, 246, 227, 0.94));
+  border: 1px solid rgba(26, 35, 126, 0.16);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 32px;
+}
+
+.auth-header h2 {
+  margin: 6px 0 4px;
   font-size: 28px;
-  font-weight: bold;
-  color: var(--lnu-navy);
-  margin-bottom: 6px;
+  line-height: 1.2;
+  color: var(--lnu-text);
 }
 
-.form-desc {
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lnu-navy-light);
+  font-weight: 700;
+}
+
+.subtitle {
   font-size: 14px;
   color: var(--lnu-text-muted);
 }
 
-/* Alerts */
 .alert {
-  border-radius: var(--lnu-radius);
-  padding: 12px 16px;
+  margin-top: 16px;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
   font-size: 13px;
-  margin-bottom: 20px;
 }
+
 .alert-danger {
-  background: #FFEBEE;
-  border-left: 4px solid var(--lnu-danger);
+  background: rgba(198, 40, 40, 0.12);
   color: var(--lnu-danger);
-}
-.alert-success {
-  background: #E8F5E9;
-  border-left: 4px solid var(--lnu-success);
-  color: var(--lnu-success);
+  border: 1px solid rgba(198, 40, 40, 0.2);
 }
 
-/* Form fields */
-.auth-form { display: flex; flex-direction: column; gap: 20px; }
+.auth-form {
+  margin-top: 20px;
+  display: grid;
+  gap: 16px;
+}
 
-.field-group { display: flex; flex-direction: column; gap: 7px; }
+.field-group {
+  display: grid;
+  gap: 8px;
+}
 
 .field-label {
   font-size: 13px;
-  font-weight: bold;
-  color: var(--lnu-navy);
-  letter-spacing: 0.3px;
+  font-weight: 600;
+  color: var(--lnu-text);
 }
 
 .field-wrap {
   position: relative;
-  display: flex;
-  align-items: center;
 }
 
 .field-icon {
   position: absolute;
-  left: 14px;
-  font-size: 15px;
-  pointer-events: none;
-  opacity: 0.5;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--lnu-navy-light);
+  opacity: 0.8;
 }
 
 .field-input {
   width: 100%;
-  padding: 12px 16px 12px 42px;
-  border: 2px solid var(--lnu-gray);
-  border-radius: var(--lnu-radius);
-  background: var(--lnu-white);
-  font-size: 14px;
-  font-family: Georgia, serif;
+  height: 44px;
+  border: 1px solid rgba(13, 21, 71, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 0 12px 0 40px;
   color: var(--lnu-text);
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  background: rgba(255, 255, 255, 0.9);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
+
 .field-input:focus {
   border-color: var(--lnu-navy);
-  box-shadow: 0 0 0 3px rgba(26,35,126,0.10);
+  box-shadow: var(--focus-ring);
+  outline: none;
 }
-.field-input::placeholder { color: var(--lnu-gray-dark); }
+
+.field-input::placeholder {
+  color: var(--lnu-gray-dark);
+}
+
+.field-input-with-toggle {
+  padding-right: 44px;
+}
 
 .field-toggle {
   position: absolute;
-  right: 12px;
-  background: none;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
   border: none;
-  cursor: pointer;
-  font-size: 16px;
-  opacity: 0.5;
-  transition: opacity 0.15s;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lnu-text-muted);
+  background: transparent;
+  transition: background 0.2s ease, color 0.2s ease;
 }
-.field-toggle:hover { opacity: 1; }
 
-/* Row */
-.form-row-between {
+.field-toggle:hover {
+  background: rgba(13, 21, 71, 0.08);
+  color: var(--lnu-text);
+}
+
+.form-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  margin-top: 2px;
   font-size: 13px;
 }
 
-.remember-label {
-  display: flex;
+.remember-wrap {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
   color: var(--lnu-text-muted);
 }
-.remember-check { accent-color: var(--lnu-navy); }
 
-.link-muted { color: var(--lnu-text-muted); text-decoration: none; font-size: 13px; }
-.link-muted:hover { color: var(--lnu-navy); }
+.remember-wrap input {
+  accent-color: var(--lnu-navy);
+}
 
-/* Buttons */
-.btn-primary {
-  width: 100%;
-  padding: 13px;
+.inline-link {
+  color: var(--lnu-navy-light);
+  text-decoration: none;
+}
+
+.inline-link:hover {
+  text-decoration: underline;
+}
+
+.inline-link.strong {
+  font-weight: 700;
+}
+
+.submit-btn {
+  height: 44px;
+  border: none;
+  border-radius: var(--radius-sm);
   background: var(--lnu-navy);
   color: var(--lnu-gold-light);
-  border: none;
-  border-radius: var(--lnu-radius);
-  font-size: 15px;
-  font-family: Georgia, serif;
-  font-weight: bold;
-  letter-spacing: 0.5px;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-  display: flex;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 48px;
+  transition: transform 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
-.btn-primary:hover { background: var(--lnu-navy-light); }
-.btn-primary:active { transform: scale(0.99); }
-.btn-primary.loading { opacity: 0.75; cursor: not-allowed; }
+
+.submit-btn:hover:not(:disabled) {
+  background: var(--lnu-navy-light);
+  box-shadow: 0 10px 18px rgba(26, 35, 126, 0.25);
+  transform: translateY(-1px);
+}
+
+.submit-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
 
 .spinner {
-  display: inline-block;
-  width: 18px; height: 18px;
-  border: 2px solid rgba(240,208,128,0.3);
-  border-top-color: var(--lnu-gold-light);
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  border: 2px solid rgba(240, 208, 128, 0.35);
+  border-top-color: var(--lnu-gold-light);
+  animation: spin 0.8s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-/* Footer */
-.form-footer-text {
-  text-align: center;
-  margin-top: 28px;
-  font-size: 13px;
+.auth-footer {
+  margin-top: 18px;
   color: var(--lnu-text-muted);
+  text-align: center;
+  font-size: 14px;
 }
-.link-gold { color: var(--lnu-gold); font-weight: bold; text-decoration: none; }
-.link-gold:hover { text-decoration: underline; }
 
-/* ── Responsive ──────────────────────────── */
-@media (max-width: 768px) {
-  .auth-layout { flex-direction: column; }
-  .brand-panel { width: 100%; padding: 32px 16px; min-height: unset; }
-  .brand-stats { gap: 12px; }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 980px) {
+  .auth-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-brand {
+    display: none;
+  }
+
+  .auth-main {
+    padding: 24px 16px;
+  }
+
+  .auth-card {
+    padding: 24px;
+  }
 }
 </style>
+

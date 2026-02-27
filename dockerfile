@@ -12,6 +12,12 @@ RUN set -eux; \
         libpng-dev \
         libonig-dev \
         libicu-dev \
+        curl \
+        gnupg \
+    ; \
+    # Install Node.js from NodeSource repository
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - ; \
+    apt-get install -y --no-install-recommends nodejs \
     ; \
     # 2) Install PHP extensions using the official helper scripts (from the PHP image docs)
     docker-php-ext-install -j"$(nproc)" \

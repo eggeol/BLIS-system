@@ -1,53 +1,40 @@
 <template>
-  <div class="auth-layout">
+  <div class="auth-shell">
+    <aside class="auth-brand">
+      <div class="brand-card">
+        <div class="brand-seal">
+          <GraduationCap :size="30" />
+        </div>
+        <p class="brand-label">LNU LLE Platform</p>
+        <h1>Create your reviewer account</h1>
+        <p class="brand-copy">
+          Register once and access your exam rooms, analytics, and mock examination modules.
+        </p>
 
-    <!-- ── Left Brand Panel ─────────────────────────── -->
-    <aside class="brand-panel">
-      <div class="brand-overlay" />
-      <div class="brand-content">
-        <div class="seal-ring">
-          <div class="seal-inner">
-            <span class="seal-torch">🕯</span>
+        <div class="brand-list">
+          <div class="brand-item" v-for="item in highlights" :key="item.text">
+            <component :is="item.icon" :size="16" class="brand-item-icon" />
+            <span>{{ item.text }}</span>
           </div>
         </div>
-
-        <h1 class="brand-title">Join the LNU<br/>LLE Community</h1>
-        <p class="brand-sub">Create your account and start your review journey</p>
-
-        <div class="brand-divider" />
-
-        <div class="feature-list">
-          <div class="feature-item" v-for="f in features" :key="f.text">
-            <span class="feature-icon">{{ f.icon }}</span>
-            <span class="feature-text">{{ f.text }}</span>
-          </div>
-        </div>
-
-        <p class="brand-motto">Integrity · Excellence · Service</p>
       </div>
     </aside>
 
-    <!-- ── Right Form Panel ─────────────────────────── -->
-    <main class="form-panel">
-      <div class="form-card">
+    <main class="auth-main">
+      <section class="auth-card">
+        <header class="auth-header">
+          <p class="eyebrow">Registration</p>
+          <h2>Create Account</h2>
+          <p class="subtitle">Complete your details to start using the platform.</p>
+        </header>
 
-        <div class="form-header">
-          <h2 class="form-title">Create Account</h2>
-          <p class="form-desc">Fill in your details to register as a reviewer</p>
-        </div>
-
-        <!-- Error Banner -->
-        <div v-if="apiError" class="alert alert-danger">
-          {{ apiError }}
-        </div>
+        <div v-if="apiError" class="alert alert-danger">{{ apiError }}</div>
 
         <form class="auth-form" @submit.prevent="handleSubmit">
-
-          <!-- Full Name -->
-          <div class="field-group">
-            <label class="field-label">Full Name</label>
+          <label class="field-group">
+            <span class="field-label">Full name</span>
             <div class="field-wrap">
-              <span class="field-icon">👤</span>
+              <UserRound :size="17" class="field-icon" />
               <input
                 v-model="form.name"
                 type="text"
@@ -56,13 +43,12 @@
                 autocomplete="name"
               />
             </div>
-          </div>
+          </label>
 
-          <!-- Email -->
-          <div class="field-group">
-            <label class="field-label">Email Address</label>
+          <label class="field-group">
+            <span class="field-label">Email address</span>
             <div class="field-wrap">
-              <span class="field-icon">✉</span>
+              <Mail :size="17" class="field-icon" />
               <input
                 v-model="form.email"
                 type="email"
@@ -71,101 +57,95 @@
                 autocomplete="email"
               />
             </div>
-          </div>
+          </label>
 
-          <!-- Role -->
-          <div class="field-group">
-            <label class="field-label">Role</label>
-            <div class="field-wrap select-wrap">
-              <span class="field-icon">🎓</span>
-              <select v-model="form.role" class="field-input field-select">
-                <option value="" disabled>Select your role</option>
-                <option value="student">Student Reviewer</option>
-                <option value="faculty">Faculty</option>
-                <option value="admin">Administrator</option>
-              </select>
-            </div>
-          </div>
-
-          <!-- Two-column: Password & Confirm -->
-          <div class="field-row-2">
-            <div class="field-group">
-              <label class="field-label">Password</label>
+          <div class="field-grid">
+            <label class="field-group">
+              <span class="field-label">Password</span>
               <div class="field-wrap">
-                <span class="field-icon">🔒</span>
+                <LockKeyhole :size="17" class="field-icon" />
                 <input
                   v-model="form.password"
                   :type="showPw ? 'text' : 'password'"
-                  class="field-input"
+                  class="field-input field-input-with-toggle"
                   placeholder="Min. 8 characters"
                   autocomplete="new-password"
                 />
                 <button type="button" class="field-toggle" @click="showPw = !showPw">
-                  {{ showPw ? '🙈' : '👁' }}
+                  <EyeOff v-if="showPw" :size="16" />
+                  <Eye v-else :size="16" />
                 </button>
               </div>
-            </div>
+            </label>
 
-            <div class="field-group">
-              <label class="field-label">Confirm Password</label>
+            <label class="field-group">
+              <span class="field-label">Confirm password</span>
               <div class="field-wrap">
-                <span class="field-icon">🔒</span>
+                <LockKeyhole :size="17" class="field-icon" />
                 <input
                   v-model="form.password_confirmation"
                   :type="showPw ? 'text' : 'password'"
                   class="field-input"
-                  :class="{ 'input-mismatch': pwMismatch }"
+                  :class="{ 'field-input-error': pwMismatch }"
                   placeholder="Re-enter password"
                   autocomplete="new-password"
                 />
               </div>
-              <span v-if="pwMismatch" class="field-error">Passwords do not match</span>
-            </div>
+              <span v-if="pwMismatch" class="field-error">Passwords do not match.</span>
+            </label>
           </div>
 
-          <!-- Password strength bar -->
-          <div v-if="form.password" class="pw-strength">
-            <div class="pw-bar">
-              <div
-                class="pw-fill"
-                :style="{ width: pwStrength.pct + '%', background: pwStrength.color }"
-              />
+          <div class="pw-strength" v-if="form.password">
+            <div class="pw-track">
+              <div class="pw-fill" :style="{ width: `${pwStrength.pct}%`, background: pwStrength.color }" />
             </div>
             <span class="pw-label" :style="{ color: pwStrength.color }">{{ pwStrength.label }}</span>
           </div>
 
-          <!-- Terms -->
-          <label class="terms-label">
-            <input type="checkbox" v-model="form.agreed" class="remember-check" />
-            <span>I agree to the <a href="#" class="link-gold">Terms of Use</a> and <a href="#" class="link-gold">Privacy Policy</a></span>
+          <label class="terms-wrap">
+            <input type="checkbox" v-model="form.agreed" />
+            <span>
+              I agree to the
+              <a href="#" class="inline-link">Terms of Use</a>
+              and
+              <a href="#" class="inline-link">Privacy Policy</a>
+            </span>
           </label>
 
-          <button type="submit" class="btn-primary" :class="{ loading: isLoading }">
+          <button type="submit" class="submit-btn" :disabled="isLoading">
             <span v-if="!isLoading">Create Account</span>
             <span v-else class="spinner" />
           </button>
-
         </form>
 
-        <p class="form-footer-text">
-          Already have an account?
-          <router-link to="/login" class="link-gold">Sign in here</router-link>
+        <p class="auth-footer">
+          Already registered?
+          <router-link to="/login" class="inline-link strong">Sign in</router-link>
         </p>
-
-      </div>
+      </section>
     </main>
-
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { computed, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import {
+  BarChart3,
+  ClipboardCheck,
+  Eye,
+  EyeOff,
+  GraduationCap,
+  LockKeyhole,
+  Mail,
+  ShieldCheck,
+  UserRound,
+} from 'lucide-vue-next'
 
 const form = reactive({
   name: '',
   email: '',
-  role: '',
   password: '',
   password_confirmation: '',
   agreed: false,
@@ -176,46 +156,50 @@ const isLoading = ref(false)
 const apiError = ref('')
 
 const auth = useAuthStore()
+const router = useRouter()
 
-const features = [
-  { icon: '📝', text: 'Full-length LLE mock exams' },
-  { icon: '📊', text: 'AI-powered pass probability score' },
-  { icon: '📈', text: 'Subject analytics & weak spot detection' },
-  { icon: '🎯', text: 'DSS-guided study recommendations' },
+const highlights = [
+  { icon: ClipboardCheck, text: 'Room-based class exam management' },
+  { icon: BarChart3, text: 'Clear analytics and score tracking' },
+  { icon: ShieldCheck, text: 'Role-based access for each account' },
 ]
 
 const pwMismatch = computed(() =>
-  form.password_confirmation.length > 0 &&
-  form.password !== form.password_confirmation
+  form.password_confirmation.length > 0 && form.password !== form.password_confirmation,
 )
 
 const pwStrength = computed(() => {
   const pw = form.password
-  if (pw.length < 6)  return { pct: 20, color: '#C62828', label: 'Weak' }
-  if (pw.length < 10) return { pct: 55, color: '#F57F17', label: 'Fair' }
-  if (/[A-Z]/.test(pw) && /[0-9]/.test(pw)) return { pct: 100, color: '#2E7D32', label: 'Strong' }
-  return { pct: 75, color: '#C9A84C', label: 'Good' }
+  if (pw.length < 6) return { pct: 20, color: 'var(--lnu-danger)', label: 'Weak' }
+  if (pw.length < 10) return { pct: 55, color: 'var(--lnu-gold)', label: 'Fair' }
+  if (/[A-Z]/.test(pw) && /[0-9]/.test(pw)) return { pct: 100, color: 'var(--lnu-success)', label: 'Strong' }
+  return { pct: 75, color: 'var(--lnu-gold)', label: 'Good' }
 })
 
 async function handleSubmit() {
   apiError.value = ''
+
   if (!form.name || !form.email || !form.password || !form.password_confirmation) {
     apiError.value = 'Please complete all required fields.'
     return
   }
+
   if (pwMismatch.value) {
     apiError.value = 'Passwords do not match.'
     return
   }
+
   if (!form.agreed) {
     apiError.value = 'Please agree to the Terms of Use.'
     return
   }
+
   isLoading.value = true
   try {
     await auth.register(form.name, form.email, form.password, form.password_confirmation)
-  } catch (e) {
-    apiError.value = e.response?.data?.message ?? 'Registration failed. Please try again.'
+    await router.push('/dashboard')
+  } catch (error) {
+    apiError.value = error.response?.data?.message ?? 'Registration failed. Please try again.'
   } finally {
     isLoading.value = false
   }
@@ -223,218 +207,367 @@ async function handleSubmit() {
 </script>
 
 <style scoped>
-/* ── Layout (shared with Login) ────────────── */
-.auth-layout {
-  display: flex;
+.auth-shell {
   min-height: 100vh;
-}
-
-/* ── Brand Panel ─────────────────────────── */
-.brand-panel {
-  position: relative;
-  width: 400px;
-  flex-shrink: 0;
-  background: var(--lnu-navy);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.brand-overlay {
-  position: absolute;
-  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(320px, 460px) 1fr;
   background:
-    radial-gradient(ellipse at 20% 20%, rgba(201,168,76,0.18) 0%, transparent 60%),
-    radial-gradient(ellipse at 80% 80%, rgba(201,168,76,0.10) 0%, transparent 50%);
-  pointer-events: none;
+    radial-gradient(circle at 10% 12%, rgba(26, 35, 126, 0.12), transparent 32%),
+    radial-gradient(circle at 90% 90%, rgba(201, 168, 76, 0.24), transparent 35%),
+    var(--lnu-bg);
 }
 
-.brand-panel::before,
-.brand-panel::after {
-  content: '';
-  position: absolute;
-  border-radius: 50%;
-  border: 1px solid rgba(201,168,76,0.15);
-}
-.brand-panel::before { width: 500px; height: 500px; top: -120px; right: -180px; }
-.brand-panel::after  { width: 350px; height: 350px; bottom: -80px; left: -120px; }
-
-.brand-content {
-  position: relative;
-  z-index: 1;
-  text-align: center;
-  padding: 40px 32px;
+.auth-brand {
+  background: linear-gradient(155deg, var(--lnu-navy-deep), var(--lnu-navy));
+  padding: 42px 34px;
+  color: var(--lnu-white);
+  display: flex;
 }
 
-.seal-ring {
-  width: 90px; height: 90px;
-  border-radius: 50%;
-  border: 3px solid var(--lnu-gold);
-  display: flex; align-items: center; justify-content: center;
-  margin: 0 auto 20px;
-  background: rgba(201,168,76,0.08);
-  box-shadow: 0 0 32px rgba(201,168,76,0.20);
+.brand-card {
+  border: 1px solid rgba(240, 208, 128, 0.25);
+  border-radius: var(--radius-lg);
+  padding: 30px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0));
+  box-shadow: var(--shadow-md);
+  width: 100%;
+  display: flex;
+  flex-direction: column;
 }
-.seal-inner {
-  width: 64px; height: 64px;
-  border-radius: 50%;
-  background: rgba(201,168,76,0.15);
-  display: flex; align-items: center; justify-content: center;
-}
-.seal-torch { font-size: 28px; }
 
-.brand-title {
-  font-size: 23px; font-weight: bold;
+.brand-seal {
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(240, 208, 128, 0.16);
   color: var(--lnu-gold-light);
-  line-height: 1.3; margin-bottom: 8px;
-}
-.brand-sub {
-  font-size: 13px; color: rgba(255,255,255,0.5);
-  margin-bottom: 24px;
-}
-.brand-divider {
-  width: 60px; height: 2px;
-  background: linear-gradient(90deg, transparent, var(--lnu-gold), transparent);
-  margin: 0 auto 24px;
+  border: 1px solid rgba(240, 208, 128, 0.35);
 }
 
-/* Feature list */
-.feature-list { display: flex; flex-direction: column; gap: 14px; margin-bottom: 28px; text-align: left; }
-.feature-item { display: flex; align-items: flex-start; gap: 10px; }
-.feature-icon { font-size: 16px; flex-shrink: 0; margin-top: 2px; }
-.feature-text { font-size: 13px; color: rgba(255,255,255,0.7); line-height: 1.4; }
-
-.brand-motto {
-  font-size: 11px; color: rgba(201,168,76,0.6);
-  letter-spacing: 2px; text-transform: uppercase;
+.brand-label {
+  margin-top: 22px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(240, 208, 128, 0.88);
 }
 
-/* ── Form Panel ──────────────────────────── */
-.form-panel {
-  flex: 1;
+.brand-card h1 {
+  margin: 10px 0 0;
+  font-size: 31px;
+  line-height: 1.2;
+  color: var(--lnu-gold-light);
+}
+
+.brand-copy {
+  margin-top: 14px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+}
+
+.brand-list {
+  margin-top: auto;
+  display: grid;
+  gap: 12px;
+  padding-top: 28px;
+}
+
+.brand-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--radius-md);
+  padding: 11px 12px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.brand-item-icon {
+  color: var(--lnu-gold-light);
+  flex-shrink: 0;
+}
+
+.auth-main {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 40px 24px;
-  background: var(--lnu-bg);
+  padding: 42px 24px;
+  background:
+    radial-gradient(circle at top right, rgba(26, 35, 126, 0.12), transparent 40%),
+    radial-gradient(circle at bottom left, rgba(201, 168, 76, 0.2), transparent 42%);
 }
 
-.form-card {
+.auth-card {
   width: 100%;
-  max-width: 480px;
+  max-width: 540px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(253, 246, 227, 0.94));
+  border: 1px solid rgba(26, 35, 126, 0.16);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 32px;
 }
 
-.form-header { margin-bottom: 24px; }
-.form-title { font-size: 26px; font-weight: bold; color: var(--lnu-navy); margin-bottom: 6px; }
-.form-desc { font-size: 14px; color: var(--lnu-text-muted); }
+.auth-header h2 {
+  margin: 6px 0 4px;
+  font-size: 28px;
+  line-height: 1.2;
+  color: var(--lnu-text);
+}
+
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lnu-navy-light);
+  font-weight: 700;
+}
+
+.subtitle {
+  font-size: 14px;
+  color: var(--lnu-text-muted);
+}
 
 .alert {
-  border-radius: var(--lnu-radius); padding: 12px 16px;
-  font-size: 13px; margin-bottom: 18px;
+  margin-top: 16px;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
 }
-.alert-danger { background: #FFEBEE; border-left: 4px solid var(--lnu-danger); color: var(--lnu-danger); }
-.alert-success { background: #E8F5E9; border-left: 4px solid var(--lnu-success); color: var(--lnu-success); }
 
-.auth-form { display: flex; flex-direction: column; gap: 18px; }
-.field-group { display: flex; flex-direction: column; gap: 6px; }
-.field-label { font-size: 13px; font-weight: bold; color: var(--lnu-navy); }
+.alert-danger {
+  background: rgba(198, 40, 40, 0.12);
+  color: var(--lnu-danger);
+  border: 1px solid rgba(198, 40, 40, 0.2);
+}
 
-.field-row-2 {
+.auth-form {
+  margin-top: 20px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
-.field-wrap { position: relative; display: flex; align-items: center; }
-.field-icon { position: absolute; left: 14px; font-size: 14px; pointer-events: none; opacity: 0.45; }
+.field-group {
+  display: grid;
+  gap: 8px;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lnu-text);
+}
+
+.field-wrap {
+  position: relative;
+}
+
+.field-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--lnu-navy-light);
+  opacity: 0.8;
+}
 
 .field-input {
   width: 100%;
-  padding: 11px 16px 11px 42px;
-  border: 2px solid var(--lnu-gray);
-  border-radius: var(--lnu-radius);
-  background: var(--lnu-white);
-  font-size: 14px;
-  font-family: Georgia, serif;
+  height: 44px;
+  border: 1px solid rgba(13, 21, 71, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 0 12px 0 40px;
   color: var(--lnu-text);
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
-  appearance: none;
+  background: rgba(255, 255, 255, 0.9);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
+
 .field-input:focus {
   border-color: var(--lnu-navy);
-  box-shadow: 0 0 0 3px rgba(26,35,126,0.10);
+  box-shadow: var(--focus-ring);
+  outline: none;
 }
-.field-input::placeholder { color: var(--lnu-gray-dark); }
-.input-mismatch { border-color: var(--lnu-danger) !important; }
 
-.select-wrap::after {
-  content: '▾';
+.field-input::placeholder {
+  color: var(--lnu-gray-dark);
+}
+
+.field-select {
+  appearance: none;
+  padding-right: 38px;
+}
+
+.field-select-icon {
   position: absolute;
-  right: 14px;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
   color: var(--lnu-text-muted);
   pointer-events: none;
-  font-size: 12px;
 }
-.field-select { cursor: pointer; }
+
+.field-input-with-toggle {
+  padding-right: 44px;
+}
 
 .field-toggle {
-  position: absolute; right: 12px;
-  background: none; border: none; cursor: pointer;
-  font-size: 15px; opacity: 0.45;
-  transition: opacity 0.15s;
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lnu-text-muted);
+  background: transparent;
+  transition: background 0.2s ease, color 0.2s ease;
 }
-.field-toggle:hover { opacity: 1; }
 
-.field-error { font-size: 11px; color: var(--lnu-danger); }
-
-/* Password strength */
-.pw-strength { display: flex; align-items: center; gap: 10px; }
-.pw-bar { flex: 1; height: 5px; background: var(--lnu-gray); border-radius: 99px; overflow: hidden; }
-.pw-fill { height: 100%; border-radius: 99px; transition: width 0.3s, background 0.3s; }
-.pw-label { font-size: 11px; font-weight: bold; white-space: nowrap; }
-
-/* Terms */
-.terms-label {
-  display: flex; align-items: flex-start; gap: 9px;
-  font-size: 13px; color: var(--lnu-text-muted); cursor: pointer; line-height: 1.5;
+.field-toggle:hover {
+  background: rgba(13, 21, 71, 0.08);
+  color: var(--lnu-text);
 }
-.remember-check { accent-color: var(--lnu-navy); margin-top: 3px; flex-shrink: 0; }
 
-.btn-primary {
-  width: 100%; padding: 13px;
-  background: var(--lnu-navy); color: var(--lnu-gold-light);
-  border: none; border-radius: var(--lnu-radius);
-  font-size: 15px; font-family: Georgia, serif; font-weight: bold;
-  cursor: pointer; transition: background 0.2s, transform 0.1s;
-  display: flex; align-items: center; justify-content: center;
-  min-height: 48px;
+.field-input-error {
+  border-color: var(--lnu-danger);
 }
-.btn-primary:hover { background: var(--lnu-navy-light); }
-.btn-primary:active { transform: scale(0.99); }
-.btn-primary.loading { opacity: 0.75; cursor: not-allowed; }
+
+.field-error {
+  font-size: 12px;
+  color: var(--lnu-danger);
+}
+
+.pw-strength {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pw-track {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--lnu-gray);
+  overflow: hidden;
+}
+
+.pw-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+.pw-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.terms-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--lnu-text-muted);
+}
+
+.terms-wrap input {
+  margin-top: 2px;
+  accent-color: var(--lnu-navy);
+}
+
+.inline-link {
+  color: var(--lnu-navy-light);
+  text-decoration: none;
+}
+
+.inline-link:hover {
+  text-decoration: underline;
+}
+
+.inline-link.strong {
+  font-weight: 700;
+}
+
+.submit-btn {
+  height: 44px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--lnu-navy);
+  color: var(--lnu-gold-light);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.submit-btn:hover:not(:disabled) {
+  background: var(--lnu-navy-light);
+  box-shadow: 0 10px 18px rgba(26, 35, 126, 0.25);
+  transform: translateY(-1px);
+}
+
+.submit-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
 
 .spinner {
-  display: inline-block; width: 18px; height: 18px;
-  border: 2px solid rgba(240,208,128,0.3);
-  border-top-color: var(--lnu-gold-light);
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  border: 2px solid rgba(240, 208, 128, 0.35);
+  border-top-color: var(--lnu-gold-light);
+  animation: spin 0.8s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-.form-footer-text {
-  text-align: center; margin-top: 24px;
-  font-size: 13px; color: var(--lnu-text-muted);
+.auth-footer {
+  margin-top: 18px;
+  color: var(--lnu-text-muted);
+  text-align: center;
+  font-size: 14px;
 }
-.link-gold { color: var(--lnu-gold); font-weight: bold; text-decoration: none; }
-.link-gold:hover { text-decoration: underline; }
 
-@media (max-width: 768px) {
-  .auth-layout { flex-direction: column; }
-  .brand-panel { width: 100%; min-height: unset; padding: 28px 16px; }
-  .feature-list { display: none; }
-  .field-row-2 { grid-template-columns: 1fr; }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 980px) {
+  .auth-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-brand {
+    display: none;
+  }
+
+  .auth-main {
+    padding: 24px 16px;
+  }
+
+  .auth-card {
+    padding: 24px;
+  }
+
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
+
