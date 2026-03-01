@@ -34,6 +34,7 @@ class User extends Authenticatable
         'name',
         'email',
         'role',
+        'is_active',
         'password',
     ];
 
@@ -56,11 +57,43 @@ class User extends Authenticatable
     }
 
     /**
+     * Exams created by this user.
+     */
+    public function createdExams(): HasMany
+    {
+        return $this->hasMany(Exam::class, 'created_by');
+    }
+
+    /**
+     * Question banks created by this user.
+     */
+    public function createdQuestionBanks(): HasMany
+    {
+        return $this->hasMany(QuestionBank::class, 'created_by');
+    }
+
+    /**
+     * Audit logs performed by this user.
+     */
+    public function auditLogs(): HasMany
+    {
+        return $this->hasMany(AuditLog::class, 'actor_id');
+    }
+
+    /**
      * Rooms where this user is a member.
      */
     public function rooms(): BelongsToMany
     {
         return $this->belongsToMany(Room::class)->withTimestamps();
+    }
+
+    /**
+     * Exam attempts taken by this user.
+     */
+    public function examAttempts(): HasMany
+    {
+        return $this->hasMany(ExamAttempt::class, 'user_id');
     }
 
     /**
@@ -72,6 +105,7 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'is_active' => 'boolean',
             'password' => 'hashed',
         ];
     }

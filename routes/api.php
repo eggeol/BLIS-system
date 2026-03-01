@@ -1,13 +1,238 @@
 <?php
 
+use App\Models\AuditLog;
+use App\Models\Exam;
+use App\Models\ExamAttempt;
+use App\Models\ExamAttemptAnswer;
+use App\Models\ExamAttemptQuestion;
+use App\Models\QuestionBank;
 use App\Models\Room;
+use App\Models\SystemSetting;
 use App\Models\User;
+use App\Services\Library\DocxQuestionParser;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
-Route::post('/auth/register', function (Request $request) {
+$canManageRooms = static function (User $user): bool {
+    return in_array($user->role, [User::ROLE_ADMIN, User::ROLE_STAFF_MASTER_EXAMINER, 'faculty'], true);
+};
+
+$isAdmin = static function (User $user): bool {
+    return $user->role === User::ROLE_ADMIN;
+};
+
+$recordAudit = static function (
+    ?User $actor,
+    string $action,
+    ?string $targetType = null,
+    int|string|null $targetId = null,
+    ?string $description = null,
+    array $metadata = [],
+    ?Request $request = null,
+): void {
+    AuditLog::create([
+        'actor_id' => $actor?->id,
+        'action' => $action,
+        'target_type' => $targetType,
+        'target_id' => $targetId,
+        'description' => $description,
+        'metadata' => $metadata,
+        'ip_address' => $request?->ip(),
+    ]);
+};
+
+$ensureActive = static function (Request $request) {
+    $user = $request->user();
+
+    if ($user && !$user->is_active) {
+        $user->tokens()->delete();
+
+        return response()->json(['message' => 'Account is disabled.'], 403);
+    }
+
+    return null;
+};
+
+$systemSettingDefaults = [
+    'platform_name' => 'LNU LLE Platform',
+    'academic_term' => 'AY 2025-2026',
+    'allow_public_registration' => true,
+    'maintenance_mode' => false,
+    'announcement_banner' => '',
+];
+
+$systemSettingBooleanKeys = [
+    'allow_public_registration',
+    'maintenance_mode',
+];
+
+$findAccessibleQuestionBank = static function (User $user, int $bankId, bool $admin): ?QuestionBank {
+    return QuestionBank::query()
+        ->withCount('questions')
+        ->whereKey($bankId)
+        ->when(!$admin, fn ($query) => $query->where('created_by', $user->id))
+        ->first();
+};
+
+$normalizeAnswerText = static function (?string $value): string {
+    $normalized = preg_replace('/\s+/', ' ', trim((string) $value));
+
+    return Str::lower((string) $normalized);
+};
+
+$refreshAttemptMetrics = static function (ExamAttempt $attempt, bool $finalize = false): ExamAttempt {
+    $answers = $attempt->answers()
+        ->select('is_correct')
+        ->get();
+
+    $answeredCount = $answers->count();
+    $correctAnswers = $answers->where('is_correct', true)->count();
+    $scorePercent = $attempt->total_items > 0
+        ? round(($correctAnswers / $attempt->total_items) * 100, 2)
+        : 0.0;
+
+    $attempt->answered_count = $answeredCount;
+    $attempt->correct_answers = $correctAnswers;
+
+    if ($finalize) {
+        $attempt->status = ExamAttempt::STATUS_SUBMITTED;
+        $attempt->submitted_at = $attempt->submitted_at ?? now();
+        $attempt->score_percent = $scorePercent;
+    }
+
+    if ($attempt->status === ExamAttempt::STATUS_SUBMITTED && is_null($attempt->score_percent)) {
+        $attempt->score_percent = $scorePercent;
+    }
+
+    $attempt->save();
+
+    return $attempt->refresh();
+};
+
+$autoSubmitExpiredAttempt = static function (ExamAttempt $attempt) use ($refreshAttemptMetrics): ExamAttempt {
+    if (
+        $attempt->status !== ExamAttempt::STATUS_IN_PROGRESS
+        || is_null($attempt->expires_at)
+        || now()->lessThanOrEqualTo($attempt->expires_at)
+    ) {
+        return $attempt;
+    }
+
+    return $refreshAttemptMetrics($attempt, true);
+};
+
+$buildAttemptPayload = static function (ExamAttempt $attempt): array {
+    $attempt->loadMissing([
+        'exam:id,title,subject,question_bank_id,total_items,duration_minutes,status,scheduled_at,one_take_only,shuffle_questions',
+        'room:id,name,code',
+        'attemptQuestions.question.options:id,question_bank_question_id,option_label,option_text,is_correct',
+        'answers',
+    ]);
+
+    $isSubmitted = $attempt->status === ExamAttempt::STATUS_SUBMITTED;
+    $answersByQuestionId = $attempt->answers->keyBy('question_bank_question_id');
+
+    $questions = $attempt->attemptQuestions
+        ->sortBy('item_number')
+        ->values()
+        ->map(function (ExamAttemptQuestion $attemptQuestion) use ($answersByQuestionId, $isSubmitted): ?array {
+            $question = $attemptQuestion->question;
+
+            if (!$question) {
+                return null;
+            }
+
+            $answer = $answersByQuestionId->get($question->id);
+
+            return [
+                'question_id' => $question->id,
+                'item_number' => $attemptQuestion->item_number,
+                'is_bookmarked' => (bool) $attemptQuestion->is_bookmarked,
+                'question_text' => $question->question_text,
+                'question_type' => $question->question_type,
+                'options' => $question->options->map(fn ($option) => [
+                    'id' => $option->id,
+                    'label' => $option->option_label,
+                    'text' => $option->option_text,
+                    'is_correct' => $isSubmitted ? (bool) $option->is_correct : null,
+                ])->values(),
+                'answer' => [
+                    'selected_option_id' => $answer?->question_bank_option_id,
+                    'answer_text' => $answer?->answer_text,
+                    'is_correct' => $isSubmitted ? $answer?->is_correct : null,
+                ],
+                'correct_answer' => $isSubmitted
+                    ? [
+                        'label' => $question->answer_label,
+                        'text' => $question->answer_text,
+                    ]
+                    : null,
+            ];
+        })
+        ->filter()
+        ->values()
+        ->all();
+
+    $remainingSeconds = null;
+
+    if ($attempt->status === ExamAttempt::STATUS_IN_PROGRESS && $attempt->expires_at) {
+        $remainingSeconds = max(0, now()->diffInSeconds($attempt->expires_at, false));
+    }
+
+    return [
+        'attempt' => [
+            'id' => $attempt->id,
+            'status' => $attempt->status,
+            'total_items' => $attempt->total_items,
+            'duration_minutes' => $attempt->duration_minutes,
+            'answered_count' => $attempt->answered_count,
+            'correct_answers' => $attempt->correct_answers,
+            'score_percent' => $attempt->score_percent,
+            'started_at' => $attempt->started_at,
+            'expires_at' => $attempt->expires_at,
+            'submitted_at' => $attempt->submitted_at,
+            'remaining_seconds' => $remainingSeconds,
+        ],
+        'exam' => [
+            'id' => $attempt->exam?->id ?? $attempt->exam_id,
+            'title' => $attempt->exam?->title,
+            'subject' => $attempt->exam?->subject,
+            'question_bank_id' => $attempt->exam?->question_bank_id,
+            'total_items' => $attempt->exam?->total_items,
+            'duration_minutes' => $attempt->exam?->duration_minutes,
+            'status' => $attempt->exam?->status,
+            'scheduled_at' => $attempt->exam?->scheduled_at,
+            'one_take_only' => (bool) ($attempt->exam?->one_take_only ?? false),
+            'shuffle_questions' => (bool) ($attempt->exam?->shuffle_questions ?? false),
+        ],
+        'room' => [
+            'id' => $attempt->room?->id ?? $attempt->room_id,
+            'name' => $attempt->room?->name,
+            'code' => $attempt->room?->code,
+        ],
+        'questions' => $questions,
+    ];
+};
+
+Route::post('/auth/register', function (Request $request) use ($recordAudit) {
+    $registrationSetting = SystemSetting::query()
+        ->where('key', 'allow_public_registration')
+        ->value('value');
+
+    $allowPublicRegistration = is_null($registrationSetting)
+        ? true
+        : filter_var($registrationSetting, FILTER_VALIDATE_BOOLEAN);
+
+    if (!$allowPublicRegistration) {
+        return response()->json([
+            'message' => 'Public registration is currently disabled.',
+        ], 403);
+    }
+
     $validated = $request->validate([
         'name' => ['required', 'string', 'max:255'],
         'email' => ['required', 'email', 'max:255', 'unique:users,email'],
@@ -18,10 +243,21 @@ Route::post('/auth/register', function (Request $request) {
         'name' => $validated['name'],
         'email' => $validated['email'],
         'role' => User::ROLE_STUDENT,
+        'is_active' => true,
         'password' => $validated['password'],
     ]);
 
     $token = $user->createToken('spa')->plainTextToken;
+
+    $recordAudit(
+        $user,
+        'auth.register',
+        'user',
+        $user->id,
+        'Student account self-registered',
+        ['email' => $user->email, 'role' => $user->role],
+        $request,
+    );
 
     return response()->json([
         'user' => $user,
@@ -41,6 +277,10 @@ Route::post('/auth/login', function (Request $request) {
         return response()->json(['message' => 'Invalid credentials'], 401);
     }
 
+    if (!$user->is_active) {
+        return response()->json(['message' => 'Account is disabled. Contact an administrator.'], 403);
+    }
+
     $token = $user->createToken('spa')->plainTextToken;
 
     return response()->json([
@@ -49,35 +289,59 @@ Route::post('/auth/login', function (Request $request) {
     ]);
 });
 
-$canManageRooms = static function (User $user): bool {
-    return in_array($user->role, [User::ROLE_ADMIN, User::ROLE_STAFF_MASTER_EXAMINER, 'faculty'], true);
-};
+Route::middleware('auth:sanctum')->group(function () use (
+    $canManageRooms,
+    $ensureActive,
+    $isAdmin,
+    $recordAudit,
+    $findAccessibleQuestionBank,
+    $normalizeAnswerText,
+    $refreshAttemptMetrics,
+    $autoSubmitExpiredAttempt,
+    $buildAttemptPayload,
+    $systemSettingBooleanKeys,
+    $systemSettingDefaults,
+) {
+    Route::get('/auth/me', function (Request $request) use ($ensureActive) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
 
-Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
-    Route::get('/auth/me', function (Request $request) {
         return response()->json($request->user());
     });
 
-    Route::post('/auth/logout', function (Request $request) {
+    Route::post('/auth/logout', function (Request $request) use ($ensureActive) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
         $request->user()->currentAccessToken()?->delete();
 
         return response()->json(['message' => 'Logged out']);
     });
 
-    Route::get('/rooms', function (Request $request) use ($canManageRooms) {
+    Route::get('/rooms', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
         $user = $request->user();
 
         if ($canManageRooms($user)) {
-            $rooms = Room::query()
-                ->where('created_by', $user->id)
+            $roomsQuery = Room::query()
                 ->with('creator:id,name')
-                ->withCount('members')
-                ->latest()
-                ->get();
+                ->withCount(['members', 'exams'])
+                ->latest();
+
+            if (!$isAdmin($user)) {
+                $roomsQuery->where('created_by', $user->id);
+            }
+
+            $rooms = $roomsQuery->get();
         } else {
             $rooms = $user->rooms()
                 ->with('creator:id,name')
-                ->withCount('members')
+                ->withCount(['members', 'exams'])
                 ->orderByDesc('rooms.created_at')
                 ->get();
         }
@@ -85,11 +349,15 @@ Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
         return response()->json(['rooms' => $rooms]);
     });
 
-    Route::get('/rooms/{room}', function (Request $request, Room $room) use ($canManageRooms) {
+    Route::get('/rooms/{room}', function (Request $request, Room $room) use ($canManageRooms, $ensureActive, $isAdmin) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
         $user = $request->user();
 
         if ($canManageRooms($user)) {
-            if ((int) $room->created_by !== (int) $user->id) {
+            if (!$isAdmin($user) && (int) $room->created_by !== (int) $user->id) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
         } else {
@@ -100,8 +368,29 @@ Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
         }
 
         $members = $room->members()
-            ->select('users.id', 'users.name', 'users.email', 'users.role')
+            ->select('users.id', 'users.name', 'users.email', 'users.role', 'users.is_active')
             ->orderBy('users.name')
+            ->get();
+
+        $assignedExams = $room->exams()
+            ->select(
+                'exams.id',
+                'exams.title',
+                'exams.subject',
+                'exams.status',
+                'exams.question_bank_id',
+                'exams.total_items',
+                'exams.duration_minutes',
+                'exams.scheduled_at',
+                'exams.one_take_only',
+                'exams.shuffle_questions',
+                'exam_room.created_at as assigned_at'
+            )
+            ->when(
+                !$canManageRooms($user),
+                fn ($query) => $query->where('exams.status', Exam::STATUS_PUBLISHED)
+            )
+            ->orderByDesc('exam_room.created_at')
             ->get();
 
         $roomData = [
@@ -113,17 +402,24 @@ Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
             'updated_at' => $room->updated_at,
             'members_count' => $members->count(),
             'members' => $members,
-            // Placeholder until exam assignment tables are connected.
-            'assigned_exams' => [],
+            'assigned_exams' => $assignedExams,
         ];
 
         return response()->json(['room' => $roomData]);
     });
 
-    Route::patch('/rooms/{room}', function (Request $request, Room $room) use ($canManageRooms) {
+    Route::patch('/rooms/{room}', function (Request $request, Room $room) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
         $user = $request->user();
 
-        if (!$canManageRooms($user) || (int) $room->created_by !== (int) $user->id) {
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$isAdmin($user) && (int) $room->created_by !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -131,11 +427,23 @@ Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
             'name' => ['required', 'string', 'max:255'],
         ]);
 
+        $oldName = $room->name;
+
         $room->update([
             'name' => $validated['name'],
         ]);
 
-        $room->load('creator:id,name')->loadCount('members');
+        $room->load('creator:id,name')->loadCount(['members', 'exams']);
+
+        $recordAudit(
+            $user,
+            'room.update',
+            'room',
+            $room->id,
+            'Room updated',
+            ['from' => $oldName, 'to' => $room->name],
+            $request,
+        );
 
         return response()->json([
             'message' => 'Room updated',
@@ -143,19 +451,45 @@ Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
         ]);
     });
 
-    Route::delete('/rooms/{room}', function (Request $request, Room $room) use ($canManageRooms) {
+    Route::delete('/rooms/{room}', function (Request $request, Room $room) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
         $user = $request->user();
 
-        if (!$canManageRooms($user) || (int) $room->created_by !== (int) $user->id) {
+        if (!$canManageRooms($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
+        if (!$isAdmin($user) && (int) $room->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $roomId = $room->id;
+        $roomName = $room->name;
+        $roomCode = $room->code;
+
         $room->delete();
+
+        $recordAudit(
+            $user,
+            'room.delete',
+            'room',
+            $roomId,
+            'Room deleted',
+            ['name' => $roomName, 'code' => $roomCode],
+            $request,
+        );
 
         return response()->json(['message' => 'Room deleted']);
     });
 
-    Route::post('/rooms', function (Request $request) use ($canManageRooms) {
+    Route::post('/rooms', function (Request $request) use ($canManageRooms, $ensureActive, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
         $user = $request->user();
         if (!$canManageRooms($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -175,13 +509,27 @@ Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
             'created_by' => $user->id,
         ]);
 
+        $recordAudit(
+            $user,
+            'room.create',
+            'room',
+            $room->id,
+            'Room created',
+            ['name' => $room->name, 'code' => $room->code],
+            $request,
+        );
+
         return response()->json([
             'message' => 'Room created',
             'room' => $room,
         ], 201);
     });
 
-    Route::post('/rooms/join', function (Request $request) {
+    Route::post('/rooms/join', function (Request $request) use ($ensureActive, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
         $validated = $request->validate([
             'code' => ['required', 'string', 'max:12'],
         ]);
@@ -193,13 +541,27 @@ Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
 
         $request->user()->rooms()->syncWithoutDetaching([$room->id]);
 
+        $recordAudit(
+            $request->user(),
+            'room.join',
+            'room',
+            $room->id,
+            'Joined room',
+            ['code' => $room->code],
+            $request,
+        );
+
         return response()->json([
             'message' => 'Joined room successfully',
             'room' => $room,
         ]);
     });
 
-    Route::delete('/rooms/{room}/leave', function (Request $request, Room $room) use ($canManageRooms) {
+    Route::delete('/rooms/{room}/leave', function (Request $request, Room $room) use ($canManageRooms, $ensureActive, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
         $user = $request->user();
 
         if ($canManageRooms($user)) {
@@ -211,6 +573,1471 @@ Route::middleware('auth:sanctum')->group(function () use ($canManageRooms) {
             return response()->json(['message' => 'You are not enrolled in this room'], 404);
         }
 
+        $recordAudit(
+            $user,
+            'room.leave',
+            'room',
+            $room->id,
+            'Left room',
+            ['code' => $room->code],
+            $request,
+        );
+
         return response()->json(['message' => 'Left room successfully']);
+    });
+
+    Route::get('/library/banks', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $query = QuestionBank::query()
+            ->with('creator:id,name')
+            ->withCount('questions')
+            ->latest();
+
+        if (!$isAdmin($user)) {
+            $query->where('created_by', $user->id);
+        }
+
+        return response()->json([
+            'banks' => $query->get(),
+        ]);
+    });
+
+    Route::post('/library/import/preview', function (Request $request) use ($canManageRooms, $ensureActive, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'file' => [
+                'required',
+                'file',
+                'mimes:docx',
+                'max:20480',
+            ],
+        ]);
+
+        /** @var \Illuminate\Http\UploadedFile $file */
+        $file = $validated['file'];
+
+        try {
+            $result = app(DocxQuestionParser::class)->parse($file->getRealPath());
+        } catch (\RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Unable to parse DOCX file. Please check the file format.',
+            ], 422);
+        }
+
+        if (count($result['questions']) === 0) {
+            return response()->json([
+                'message' => 'No valid question pattern detected from this DOCX file.',
+                'preview' => [
+                    'questions' => [],
+                    'warnings' => $result['warnings'],
+                    'answer_key_detected' => $result['answer_key_detected'],
+                    'answer_key_items' => $result['answer_key_items'],
+                    'total_items' => 0,
+                    'source_filename' => $file->getClientOriginalName(),
+                ],
+            ], 422);
+        }
+
+        $recordAudit(
+            $user,
+            'library.import.preview',
+            'docx',
+            null,
+            'Previewed DOCX question import',
+            [
+                'source_filename' => $file->getClientOriginalName(),
+                'questions_detected' => count($result['questions']),
+                'warnings' => count($result['warnings']),
+                'answer_key_detected' => $result['answer_key_detected'],
+                'answer_key_items' => $result['answer_key_items'],
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'DOCX parsed successfully.',
+            'preview' => [
+                'questions' => $result['questions'],
+                'warnings' => $result['warnings'],
+                'answer_key_detected' => $result['answer_key_detected'],
+                'answer_key_items' => $result['answer_key_items'],
+                'total_items' => count($result['questions']),
+                'source_filename' => $file->getClientOriginalName(),
+            ],
+        ]);
+    });
+
+    Route::post('/library/banks', function (Request $request) use ($canManageRooms, $ensureActive, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'title' => ['required', 'string', 'max:255'],
+            'subject' => ['nullable', 'string', 'max:255'],
+            'source_filename' => ['nullable', 'string', 'max:255'],
+            'questions' => ['required', 'array', 'min:1', 'max:1000'],
+            'questions.*.text' => ['required', 'string'],
+            'questions.*.question_type' => ['nullable', Rule::in(['multiple_choice', 'true_false', 'open_ended'])],
+            'questions.*.answer_label' => ['nullable', 'string', 'max:2'],
+            'questions.*.answer_text' => ['nullable', 'string'],
+            'questions.*.options' => ['nullable', 'array', 'max:8'],
+            'questions.*.options.*.label' => ['nullable', 'string', 'max:2'],
+            'questions.*.options.*.text' => ['required_with:questions.*.options', 'string'],
+            'questions.*.options.*.is_correct' => ['nullable', 'boolean'],
+        ]);
+
+        $questions = collect($validated['questions'])
+            ->map(function (array $question, int $index): array {
+                $optionRows = collect($question['options'] ?? [])
+                    ->map(function (array $option, int $optionIndex): array {
+                        $defaultLabel = chr(ord('A') + min($optionIndex, 25));
+
+                        return [
+                            'sort_order' => $optionIndex + 1,
+                            'label' => Str::upper(trim((string) ($option['label'] ?? $defaultLabel))),
+                            'text' => trim((string) ($option['text'] ?? '')),
+                            'is_correct' => (bool) ($option['is_correct'] ?? false),
+                        ];
+                    })
+                    ->filter(fn (array $option): bool => $option['text'] !== '')
+                    ->values();
+
+                if ($optionRows->isNotEmpty()) {
+                    $answerLabel = Str::upper(trim((string) ($question['answer_label'] ?? '')));
+                    if ($answerLabel === '') {
+                        $firstCorrectOption = $optionRows->first(fn (array $option): bool => $option['is_correct']);
+                        $answerLabel = is_array($firstCorrectOption)
+                            ? Str::upper(trim((string) ($firstCorrectOption['label'] ?? '')))
+                            : '';
+                    }
+
+                    $optionRows = $optionRows->map(function (array $option) use ($answerLabel): array {
+                        $option['is_correct'] = $answerLabel !== '' && $option['label'] === $answerLabel;
+
+                        return $option;
+                    })->values();
+
+                    $resolvedCorrectOption = $optionRows->first(fn (array $option): bool => $option['is_correct']);
+                    $answerText = is_array($resolvedCorrectOption)
+                        ? ($resolvedCorrectOption['text'] ?? null)
+                        : null;
+                    $type = $question['question_type'] ?? 'multiple_choice';
+                    $type = in_array($type, ['multiple_choice', 'true_false', 'open_ended'], true) ? $type : 'multiple_choice';
+                } else {
+                    $answerLabel = null;
+                    $answerText = $question['answer_text'] ?? null;
+                    $type = 'open_ended';
+                }
+
+                return [
+                    'item_number' => $index + 1,
+                    'text' => trim((string) ($question['text'] ?? '')),
+                    'question_type' => $type,
+                    'answer_label' => $answerLabel,
+                    'answer_text' => $answerText,
+                    'options' => $optionRows->all(),
+                ];
+            })
+            ->filter(fn (array $question): bool => $question['text'] !== '')
+            ->values();
+
+        if ($questions->isEmpty()) {
+            return response()->json([
+                'message' => 'At least one valid question is required.',
+            ], 422);
+        }
+
+        $bank = DB::transaction(function () use ($validated, $questions, $user) {
+            $createdBank = QuestionBank::create([
+                'title' => trim((string) $validated['title']),
+                'subject' => filled($validated['subject'] ?? null)
+                    ? trim((string) $validated['subject'])
+                    : null,
+                'source_filename' => filled($validated['source_filename'] ?? null)
+                    ? trim((string) $validated['source_filename'])
+                    : null,
+                'total_items' => $questions->count(),
+                'created_by' => $user->id,
+            ]);
+
+            foreach ($questions as $question) {
+                $createdQuestion = $createdBank->questions()->create([
+                    'item_number' => $question['item_number'],
+                    'question_text' => $question['text'],
+                    'question_type' => $question['question_type'],
+                    'answer_label' => $question['answer_label'],
+                    'answer_text' => $question['answer_text'],
+                ]);
+
+                foreach ($question['options'] as $option) {
+                    $createdQuestion->options()->create([
+                        'sort_order' => $option['sort_order'],
+                        'option_label' => $option['label'],
+                        'option_text' => $option['text'],
+                        'is_correct' => $option['is_correct'],
+                    ]);
+                }
+            }
+
+            return $createdBank;
+        });
+
+        $bank->load('creator:id,name')->loadCount('questions');
+
+        $recordAudit(
+            $user,
+            'library.bank.create',
+            'question_bank',
+            $bank->id,
+            'Question bank created from parsed DOCX',
+            [
+                'title' => $bank->title,
+                'subject' => $bank->subject,
+                'total_items' => $bank->total_items,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Question bank created successfully.',
+            'bank' => $bank,
+        ], 201);
+    });
+
+    Route::delete('/library/banks/{bank}', function (
+        Request $request,
+        QuestionBank $bank
+    ) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$isAdmin($user) && (int) $bank->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $questionIdSubQuery = DB::table('question_bank_questions')
+            ->select('id')
+            ->where('question_bank_id', $bank->id);
+
+        $hasAttemptQuestionUsage = DB::table('exam_attempt_questions')
+            ->whereIn('question_bank_question_id', $questionIdSubQuery)
+            ->exists();
+
+        $hasAttemptAnswerUsage = DB::table('exam_attempt_answers')
+            ->whereIn('question_bank_question_id', function ($query) use ($bank) {
+                $query->select('id')
+                    ->from('question_bank_questions')
+                    ->where('question_bank_id', $bank->id);
+            })
+            ->exists();
+
+        if ($hasAttemptQuestionUsage || $hasAttemptAnswerUsage) {
+            return response()->json([
+                'message' => 'Cannot delete this question bank because it already has exam attempt records.',
+            ], 422);
+        }
+
+        $linkedExamCount = $bank->exams()->count();
+        $bankTitle = $bank->title;
+
+        $bank->delete();
+
+        $recordAudit(
+            $user,
+            'library.bank.delete',
+            'question_bank',
+            $bank->id,
+            'Question bank deleted',
+            [
+                'title' => $bankTitle,
+                'linked_exams_count' => $linkedExamCount,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Question bank deleted.',
+        ]);
+    });
+
+    Route::get('/exams', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $status = $request->query('status');
+
+        $query = Exam::query()
+            ->with('creator:id,name')
+            ->with('questionBank:id,title,subject,total_items')
+            ->with('rooms:id,name,code')
+            ->withCount('rooms')
+            ->latest();
+
+        if (!$isAdmin($user)) {
+            $query->where('created_by', $user->id);
+        }
+
+        if (is_string($status) && in_array($status, Exam::STATUSES, true)) {
+            $query->where('status', $status);
+        }
+
+        return response()->json([
+            'exams' => $query->get(),
+        ]);
+    });
+
+    Route::post('/exams', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit, $findAccessibleQuestionBank) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'title' => ['required', 'string', 'max:255'],
+            'subject' => ['nullable', 'string', 'max:255'],
+            'description' => ['nullable', 'string'],
+            'question_bank_id' => ['nullable', 'integer', 'exists:question_banks,id'],
+            'total_items' => ['required', 'integer', 'min:1', 'max:1000'],
+            'duration_minutes' => ['required', 'integer', 'min:1', 'max:600'],
+            'scheduled_at' => ['nullable', 'date'],
+            'one_take_only' => ['nullable', 'boolean'],
+            'shuffle_questions' => ['nullable', 'boolean'],
+            'status' => ['nullable', Rule::in(Exam::STATUSES)],
+            'room_ids' => ['nullable', 'array'],
+            'room_ids.*' => ['integer', 'exists:rooms,id'],
+        ]);
+
+        $questionBank = null;
+        $resolvedStatus = $validated['status'] ?? Exam::STATUS_DRAFT;
+
+        if (!is_null($validated['question_bank_id'] ?? null)) {
+            $questionBank = $findAccessibleQuestionBank(
+                $user,
+                (int) $validated['question_bank_id'],
+                $isAdmin($user),
+            );
+
+            if (!$questionBank) {
+                return response()->json([
+                    'message' => 'Selected question bank is not accessible.',
+                ], 422);
+            }
+
+            if ($questionBank->questions_count < (int) $validated['total_items']) {
+                return response()->json([
+                    'message' => 'Selected question bank does not have enough questions for total items.',
+                ], 422);
+            }
+        }
+
+        if ($resolvedStatus === Exam::STATUS_PUBLISHED && !$questionBank) {
+            return response()->json([
+                'message' => 'A question bank is required before publishing an exam.',
+            ], 422);
+        }
+
+        $exam = Exam::create([
+            'title' => $validated['title'],
+            'subject' => $validated['subject'] ?? null,
+            'description' => $validated['description'] ?? null,
+            'question_bank_id' => $validated['question_bank_id'] ?? null,
+            'total_items' => $validated['total_items'],
+            'duration_minutes' => $validated['duration_minutes'],
+            'scheduled_at' => $validated['scheduled_at'] ?? null,
+            'one_take_only' => (bool) ($validated['one_take_only'] ?? false),
+            'shuffle_questions' => (bool) ($validated['shuffle_questions'] ?? false),
+            'status' => $validated['status'] ?? Exam::STATUS_DRAFT,
+            'created_by' => $user->id,
+        ]);
+
+        $roomIds = collect($validated['room_ids'] ?? [])->unique()->values();
+
+        if ($roomIds->isNotEmpty()) {
+            $allowedCount = Room::query()
+                ->whereIn('id', $roomIds)
+                ->when(!$isAdmin($user), fn ($query) => $query->where('created_by', $user->id))
+                ->count();
+
+            if ($allowedCount !== $roomIds->count()) {
+                $exam->delete();
+
+                return response()->json([
+                    'message' => 'One or more selected rooms are not accessible.',
+                ], 422);
+            }
+
+            $now = now();
+            $syncPayload = $roomIds->mapWithKeys(fn ($roomId) => [$roomId => [
+                'assigned_by' => $user->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]])->all();
+
+            $exam->rooms()->sync($syncPayload);
+        }
+
+        $exam->load(['creator:id,name', 'questionBank:id,title,subject,total_items', 'rooms:id,name,code'])->loadCount('rooms');
+
+        $recordAudit(
+            $user,
+            'exam.create',
+            'exam',
+            $exam->id,
+            'Exam created',
+            [
+                'title' => $exam->title,
+                'status' => $exam->status,
+                'scheduled_at' => $exam->scheduled_at,
+                'question_bank_id' => $exam->question_bank_id,
+                'one_take_only' => (bool) $exam->one_take_only,
+                'shuffle_questions' => (bool) $exam->shuffle_questions,
+                'rooms_assigned' => $exam->rooms_count,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Exam created',
+            'exam' => $exam,
+        ], 201);
+    });
+
+    Route::patch('/exams/{exam}', function (Request $request, Exam $exam) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit, $findAccessibleQuestionBank) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'title' => ['sometimes', 'required', 'string', 'max:255'],
+            'subject' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'description' => ['sometimes', 'nullable', 'string'],
+            'question_bank_id' => ['sometimes', 'nullable', 'integer', 'exists:question_banks,id'],
+            'total_items' => ['sometimes', 'required', 'integer', 'min:1', 'max:1000'],
+            'duration_minutes' => ['sometimes', 'required', 'integer', 'min:1', 'max:600'],
+            'scheduled_at' => ['sometimes', 'nullable', 'date'],
+            'one_take_only' => ['sometimes', 'boolean'],
+            'shuffle_questions' => ['sometimes', 'boolean'],
+            'status' => ['sometimes', 'required', Rule::in(Exam::STATUSES)],
+            'room_ids' => ['sometimes', 'array'],
+            'room_ids.*' => ['integer', 'exists:rooms,id'],
+        ]);
+
+        $resolvedQuestionBankId = array_key_exists('question_bank_id', $validated)
+            ? $validated['question_bank_id']
+            : $exam->question_bank_id;
+        $resolvedTotalItems = array_key_exists('total_items', $validated)
+            ? (int) $validated['total_items']
+            : (int) $exam->total_items;
+        $resolvedStatus = array_key_exists('status', $validated)
+            ? $validated['status']
+            : $exam->status;
+
+        if (!is_null($resolvedQuestionBankId)) {
+            $questionBank = $findAccessibleQuestionBank(
+                $user,
+                (int) $resolvedQuestionBankId,
+                $isAdmin($user),
+            );
+
+            if (!$questionBank) {
+                return response()->json([
+                    'message' => 'Selected question bank is not accessible.',
+                ], 422);
+            }
+
+            if ($questionBank->questions_count < $resolvedTotalItems) {
+                return response()->json([
+                    'message' => 'Selected question bank does not have enough questions for total items.',
+                ], 422);
+            }
+        }
+
+        if ($resolvedStatus === Exam::STATUS_PUBLISHED && is_null($resolvedQuestionBankId)) {
+            return response()->json([
+                'message' => 'A question bank is required before publishing an exam.',
+            ], 422);
+        }
+
+        $exam->fill($validated);
+        $exam->save();
+
+        if (array_key_exists('room_ids', $validated)) {
+            $roomIds = collect($validated['room_ids'] ?? [])->unique()->values();
+
+            if ($roomIds->isNotEmpty()) {
+                $allowedCount = Room::query()
+                    ->whereIn('id', $roomIds)
+                    ->when(!$isAdmin($user), fn ($query) => $query->where('created_by', $user->id))
+                    ->count();
+
+                if ($allowedCount !== $roomIds->count()) {
+                    return response()->json([
+                        'message' => 'One or more selected rooms are not accessible.',
+                    ], 422);
+                }
+            }
+
+            $now = now();
+            $syncPayload = $roomIds->mapWithKeys(fn ($roomId) => [$roomId => [
+                'assigned_by' => $user->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]])->all();
+
+            $exam->rooms()->sync($syncPayload);
+        }
+
+        $exam->load(['creator:id,name', 'questionBank:id,title,subject,total_items', 'rooms:id,name,code'])->loadCount('rooms');
+
+        $recordAudit(
+            $user,
+            'exam.update',
+            'exam',
+            $exam->id,
+            'Exam updated',
+            [
+                'title' => $exam->title,
+                'status' => $exam->status,
+                'scheduled_at' => $exam->scheduled_at,
+                'question_bank_id' => $exam->question_bank_id,
+                'one_take_only' => (bool) $exam->one_take_only,
+                'shuffle_questions' => (bool) $exam->shuffle_questions,
+                'rooms_assigned' => $exam->rooms_count,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Exam updated',
+            'exam' => $exam,
+        ]);
+    });
+
+    Route::delete('/exams/{exam}', function (Request $request, Exam $exam) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $examId = $exam->id;
+        $examTitle = $exam->title;
+
+        $exam->rooms()->detach();
+        $exam->delete();
+
+        $recordAudit(
+            $user,
+            'exam.delete',
+            'exam',
+            $examId,
+            'Exam deleted',
+            ['title' => $examTitle],
+            $request,
+        );
+
+        return response()->json(['message' => 'Exam deleted']);
+    });
+
+    Route::post('/student/exams/{exam}/start', function (
+        Request $request,
+        Exam $exam
+    ) use (
+        $canManageRooms,
+        $ensureActive,
+        $recordAudit,
+        $autoSubmitExpiredAttempt,
+        $buildAttemptPayload
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if ($canManageRooms($user)) {
+            return response()->json([
+                'message' => 'Only student accounts can start exam attempts.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'room_id' => ['required', 'integer', 'exists:rooms,id'],
+        ]);
+
+        $roomId = (int) $validated['room_id'];
+
+        $isMember = $user->rooms()
+            ->where('rooms.id', $roomId)
+            ->exists();
+
+        if (!$isMember) {
+            return response()->json([
+                'message' => 'You are not a member of the selected room.',
+            ], 403);
+        }
+
+        $isAssigned = $exam->rooms()
+            ->where('rooms.id', $roomId)
+            ->exists();
+
+        if (!$isAssigned) {
+            return response()->json([
+                'message' => 'This exam is not assigned to the selected room.',
+            ], 422);
+        }
+
+        if ($exam->status !== Exam::STATUS_PUBLISHED) {
+            return response()->json([
+                'message' => 'This exam is not currently available.',
+            ], 422);
+        }
+
+        if ($exam->scheduled_at && now()->lt($exam->scheduled_at)) {
+            return response()->json([
+                'message' => 'This exam is not yet available based on schedule.',
+                'available_at' => $exam->scheduled_at,
+            ], 422);
+        }
+
+        if (!$exam->question_bank_id) {
+            return response()->json([
+                'message' => 'This exam has no question bank configured yet.',
+            ], 422);
+        }
+
+        $questionBank = QuestionBank::query()->find($exam->question_bank_id);
+
+        if (!$questionBank) {
+            return response()->json([
+                'message' => 'Source question bank was not found.',
+            ], 422);
+        }
+
+        $availableQuestionCount = $questionBank->questions()->count();
+        $targetItems = min((int) $exam->total_items, $availableQuestionCount);
+
+        if ($targetItems < 1) {
+            return response()->json([
+                'message' => 'No questions are available for this exam.',
+            ], 422);
+        }
+
+        $existingAttempt = ExamAttempt::query()
+            ->where('exam_id', $exam->id)
+            ->where('room_id', $roomId)
+            ->where('user_id', $user->id)
+            ->where('status', ExamAttempt::STATUS_IN_PROGRESS)
+            ->latest('started_at')
+            ->first();
+
+        if ($existingAttempt) {
+            $existingAttempt = $autoSubmitExpiredAttempt($existingAttempt);
+
+            if ($existingAttempt->status === ExamAttempt::STATUS_IN_PROGRESS) {
+                return response()->json([
+                    'message' => 'Resuming your active attempt.',
+                    'resumed' => true,
+                    ...$buildAttemptPayload($existingAttempt),
+                ]);
+            }
+        }
+
+        if ((bool) $exam->one_take_only) {
+            $hasSubmittedAttempt = ExamAttempt::query()
+                ->where('exam_id', $exam->id)
+                ->where('user_id', $user->id)
+                ->where('status', ExamAttempt::STATUS_SUBMITTED)
+                ->exists();
+
+            if ($hasSubmittedAttempt) {
+                return response()->json([
+                    'message' => 'This exam allows one attempt only and your attempt is already submitted.',
+                ], 422);
+            }
+        }
+
+        $questionBankId = (int) $questionBank->id;
+        $questionQuery = DB::table('question_bank_questions')
+            ->where('question_bank_id', $questionBankId);
+
+        if ((bool) $exam->shuffle_questions) {
+            $questionQuery->inRandomOrder();
+        } else {
+            $questionQuery
+                ->orderBy('item_number')
+                ->orderBy('id');
+        }
+
+        $questionIds = $questionQuery
+            ->limit($targetItems)
+            ->pluck('id')
+            ->values()
+            ->all();
+        $actualTotalItems = count($questionIds);
+
+        if ($actualTotalItems < 1) {
+            return response()->json([
+                'message' => 'No questions are available for this exam.',
+            ], 422);
+        }
+
+        $durationMinutes = max(1, (int) $exam->duration_minutes);
+        $startedAt = now();
+
+        $attempt = DB::transaction(function () use (
+            $exam,
+            $roomId,
+            $user,
+            $questionIds,
+            $actualTotalItems,
+            $durationMinutes,
+            $startedAt
+        ) {
+            $createdAttempt = ExamAttempt::create([
+                'exam_id' => $exam->id,
+                'room_id' => $roomId,
+                'user_id' => $user->id,
+                'status' => ExamAttempt::STATUS_IN_PROGRESS,
+                'total_items' => $actualTotalItems,
+                'duration_minutes' => $durationMinutes,
+                'answered_count' => 0,
+                'correct_answers' => 0,
+                'started_at' => $startedAt,
+                'expires_at' => $startedAt->copy()->addMinutes($durationMinutes),
+            ]);
+
+            $rows = [];
+
+            foreach ($questionIds as $index => $questionId) {
+                $rows[] = [
+                    'exam_attempt_id' => $createdAttempt->id,
+                    'question_bank_question_id' => $questionId,
+                    'item_number' => $index + 1,
+                    'is_bookmarked' => false,
+                    'created_at' => $startedAt,
+                    'updated_at' => $startedAt,
+                ];
+            }
+
+            ExamAttemptQuestion::insert($rows);
+
+            return $createdAttempt->refresh();
+        });
+
+        $recordAudit(
+            $user,
+            'exam.attempt.start',
+            'exam_attempt',
+            $attempt->id,
+            'Student started an exam attempt',
+            [
+                'exam_id' => $exam->id,
+                'room_id' => $roomId,
+                'total_items' => $attempt->total_items,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Exam attempt started.',
+            'resumed' => false,
+            ...$buildAttemptPayload($attempt),
+        ], 201);
+    });
+
+    Route::get('/student/exam-attempts/{attempt}', function (
+        Request $request,
+        ExamAttempt $attempt
+    ) use (
+        $canManageRooms,
+        $ensureActive,
+        $autoSubmitExpiredAttempt,
+        $buildAttemptPayload
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if ($canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ((int) $attempt->user_id !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $attempt = $autoSubmitExpiredAttempt($attempt);
+
+        return response()->json($buildAttemptPayload($attempt));
+    });
+
+    Route::patch('/student/exam-attempts/{attempt}/answers', function (
+        Request $request,
+        ExamAttempt $attempt
+    ) use (
+        $canManageRooms,
+        $ensureActive,
+        $normalizeAnswerText,
+        $refreshAttemptMetrics,
+        $autoSubmitExpiredAttempt,
+        $buildAttemptPayload
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if ($canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ((int) $attempt->user_id !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $attempt = $autoSubmitExpiredAttempt($attempt);
+
+        if ($attempt->status !== ExamAttempt::STATUS_IN_PROGRESS) {
+            return response()->json([
+                'message' => 'This attempt is already submitted.',
+                ...$buildAttemptPayload($attempt),
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'question_id' => ['required', 'integer', 'exists:question_bank_questions,id'],
+            'selected_option_id' => ['nullable', 'integer', 'exists:question_bank_options,id'],
+            'answer_text' => ['nullable', 'string'],
+        ]);
+
+        $questionId = (int) $validated['question_id'];
+
+        $attemptQuestion = $attempt->attemptQuestions()
+            ->where('question_bank_question_id', $questionId)
+            ->first();
+
+        if (!$attemptQuestion) {
+            return response()->json([
+                'message' => 'The selected question is not part of this attempt.',
+            ], 422);
+        }
+
+        $question = $attemptQuestion->question()
+            ->with('options:id,question_bank_question_id,option_label,option_text,is_correct')
+            ->first();
+
+        if (!$question) {
+            return response()->json([
+                'message' => 'Question not found.',
+            ], 422);
+        }
+
+        $selectedOptionId = is_null($validated['selected_option_id'] ?? null)
+            ? null
+            : (int) $validated['selected_option_id'];
+        $answerText = array_key_exists('answer_text', $validated)
+            ? trim((string) $validated['answer_text'])
+            : null;
+        $answerText = $answerText === '' ? null : $answerText;
+
+        if ($question->question_type === 'open_ended') {
+            if (is_null($answerText)) {
+                ExamAttemptAnswer::query()
+                    ->where('exam_attempt_id', $attempt->id)
+                    ->where('question_bank_question_id', $questionId)
+                    ->delete();
+            } else {
+                $normalizedSubmitted = $normalizeAnswerText($answerText);
+                $normalizedExpected = $normalizeAnswerText($question->answer_text);
+                $normalizedAnswerLabel = $normalizeAnswerText($question->answer_label);
+
+                $isCorrect = false;
+
+                if ($normalizedExpected !== '' && $normalizedSubmitted === $normalizedExpected) {
+                    $isCorrect = true;
+                } elseif ($normalizedAnswerLabel !== '' && $normalizedSubmitted === $normalizedAnswerLabel) {
+                    $isCorrect = true;
+                }
+
+                ExamAttemptAnswer::updateOrCreate(
+                    [
+                        'exam_attempt_id' => $attempt->id,
+                        'question_bank_question_id' => $questionId,
+                    ],
+                    [
+                        'question_bank_option_id' => null,
+                        'answer_text' => $answerText,
+                        'is_correct' => $isCorrect,
+                        'answered_at' => now(),
+                    ],
+                );
+            }
+        } else {
+            if (is_null($selectedOptionId)) {
+                ExamAttemptAnswer::query()
+                    ->where('exam_attempt_id', $attempt->id)
+                    ->where('question_bank_question_id', $questionId)
+                    ->delete();
+            } else {
+                $selectedOption = $question->options
+                    ->firstWhere('id', $selectedOptionId);
+
+                if (!$selectedOption) {
+                    return response()->json([
+                        'message' => 'Selected option is not valid for this question.',
+                    ], 422);
+                }
+
+                ExamAttemptAnswer::updateOrCreate(
+                    [
+                        'exam_attempt_id' => $attempt->id,
+                        'question_bank_question_id' => $questionId,
+                    ],
+                    [
+                        'question_bank_option_id' => $selectedOption->id,
+                        'answer_text' => $selectedOption->option_text,
+                        'is_correct' => (bool) $selectedOption->is_correct,
+                        'answered_at' => now(),
+                    ],
+                );
+            }
+        }
+
+        $attempt = $refreshAttemptMetrics($attempt->refresh(), false);
+        $attempt = $autoSubmitExpiredAttempt($attempt);
+
+        return response()->json([
+            'message' => 'Answer saved.',
+            ...$buildAttemptPayload($attempt),
+        ]);
+    });
+
+    Route::patch('/student/exam-attempts/{attempt}/questions/{questionId}/bookmark', function (
+        Request $request,
+        ExamAttempt $attempt,
+        int $questionId
+    ) use (
+        $canManageRooms,
+        $ensureActive,
+        $autoSubmitExpiredAttempt,
+        $buildAttemptPayload
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if ($canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ((int) $attempt->user_id !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $attempt = $autoSubmitExpiredAttempt($attempt);
+
+        if ($attempt->status !== ExamAttempt::STATUS_IN_PROGRESS) {
+            return response()->json([
+                'message' => 'This attempt is already submitted.',
+                ...$buildAttemptPayload($attempt),
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'is_bookmarked' => ['required', 'boolean'],
+        ]);
+
+        $attemptQuestion = $attempt->attemptQuestions()
+            ->where('question_bank_question_id', $questionId)
+            ->first();
+
+        if (!$attemptQuestion) {
+            return response()->json([
+                'message' => 'The selected question is not part of this attempt.',
+            ], 422);
+        }
+
+        $attemptQuestion->is_bookmarked = (bool) $validated['is_bookmarked'];
+        $attemptQuestion->save();
+
+        return response()->json([
+            'message' => $attemptQuestion->is_bookmarked ? 'Question bookmarked.' : 'Bookmark removed.',
+            ...$buildAttemptPayload($attempt->refresh()),
+        ]);
+    });
+
+    Route::post('/student/exam-attempts/{attempt}/submit', function (
+        Request $request,
+        ExamAttempt $attempt
+    ) use (
+        $canManageRooms,
+        $ensureActive,
+        $recordAudit,
+        $refreshAttemptMetrics,
+        $autoSubmitExpiredAttempt,
+        $buildAttemptPayload
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if ($canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ((int) $attempt->user_id !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $attempt = $autoSubmitExpiredAttempt($attempt);
+
+        if ($attempt->status !== ExamAttempt::STATUS_IN_PROGRESS) {
+            return response()->json([
+                'message' => 'Attempt already submitted.',
+                ...$buildAttemptPayload($attempt),
+            ]);
+        }
+
+        $attempt = $refreshAttemptMetrics($attempt, true);
+
+        $recordAudit(
+            $user,
+            'exam.attempt.submit',
+            'exam_attempt',
+            $attempt->id,
+            'Student submitted an exam attempt',
+            [
+                'exam_id' => $attempt->exam_id,
+                'room_id' => $attempt->room_id,
+                'score_percent' => $attempt->score_percent,
+                'correct_answers' => $attempt->correct_answers,
+                'total_items' => $attempt->total_items,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Attempt submitted successfully.',
+            ...$buildAttemptPayload($attempt),
+        ]);
+    });
+
+    Route::get('/reports/overview', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($isAdmin($user)) {
+            $metrics = [
+                'total_users' => User::count(),
+                'active_users' => User::where('is_active', true)->count(),
+                'inactive_users' => User::where('is_active', false)->count(),
+                'students' => User::where('role', User::ROLE_STUDENT)->count(),
+                'staff' => User::where('role', User::ROLE_STAFF_MASTER_EXAMINER)->count(),
+                'admins' => User::where('role', User::ROLE_ADMIN)->count(),
+                'total_rooms' => Room::count(),
+                'total_exams' => Exam::count(),
+                'exam_assignments' => DB::table('exam_room')->count(),
+            ];
+
+            $recentActivity = AuditLog::query()
+                ->with('actor:id,name,role')
+                ->latest()
+                ->limit(14)
+                ->get();
+        } else {
+            $staffRooms = Room::query()->where('created_by', $user->id);
+            $staffExams = Exam::query()->where('created_by', $user->id);
+
+            $metrics = [
+                'managed_rooms' => $staffRooms->count(),
+                'managed_exams' => $staffExams->count(),
+                'students_enrolled' => DB::table('room_user')
+                    ->join('rooms', 'rooms.id', '=', 'room_user.room_id')
+                    ->where('rooms.created_by', $user->id)
+                    ->distinct('room_user.user_id')
+                    ->count('room_user.user_id'),
+                'exam_assignments' => DB::table('exam_room')
+                    ->join('exams', 'exams.id', '=', 'exam_room.exam_id')
+                    ->where('exams.created_by', $user->id)
+                    ->count(),
+            ];
+
+            $recentActivity = AuditLog::query()
+                ->with('actor:id,name,role')
+                ->where('actor_id', $user->id)
+                ->latest()
+                ->limit(14)
+                ->get();
+        }
+
+        return response()->json([
+            'metrics' => $metrics,
+            'recent_activity' => $recentActivity,
+        ]);
+    });
+
+    Route::get('/settings/system', function (Request $request) use (
+        $canManageRooms,
+        $ensureActive,
+        $isAdmin,
+        $systemSettingBooleanKeys,
+        $systemSettingDefaults
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $stored = SystemSetting::query()
+            ->whereIn('key', array_keys($systemSettingDefaults))
+            ->pluck('value', 'key')
+            ->all();
+
+        $settings = [];
+
+        foreach ($systemSettingDefaults as $key => $defaultValue) {
+            $raw = $stored[$key] ?? $defaultValue;
+
+            if (in_array($key, $systemSettingBooleanKeys, true)) {
+                $settings[$key] = filter_var($raw, FILTER_VALIDATE_BOOLEAN);
+                continue;
+            }
+
+            $settings[$key] = $raw;
+        }
+
+        return response()->json([
+            'settings' => $settings,
+            'can_edit' => $isAdmin($user),
+        ]);
+    });
+
+    Route::put('/settings/system', function (Request $request) use (
+        $ensureActive,
+        $isAdmin,
+        $recordAudit,
+        $systemSettingDefaults
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$isAdmin($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'platform_name' => ['sometimes', 'required', 'string', 'max:255'],
+            'academic_term' => ['sometimes', 'required', 'string', 'max:255'],
+            'allow_public_registration' => ['sometimes', 'required', 'boolean'],
+            'maintenance_mode' => ['sometimes', 'required', 'boolean'],
+            'announcement_banner' => ['sometimes', 'nullable', 'string', 'max:500'],
+        ]);
+
+        foreach ($validated as $key => $value) {
+            if (!array_key_exists($key, $systemSettingDefaults)) {
+                continue;
+            }
+
+            SystemSetting::updateOrCreate(
+                ['key' => $key],
+                [
+                    'value' => is_bool($value) ? ($value ? '1' : '0') : (string) $value,
+                    'updated_by' => $user->id,
+                ],
+            );
+        }
+
+        $recordAudit(
+            $user,
+            'settings.update',
+            'system_settings',
+            null,
+            'System settings updated',
+            ['keys' => array_keys($validated)],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Settings updated',
+        ]);
+    });
+
+    Route::middleware([])->prefix('/admin')->group(function () use ($ensureActive, $isAdmin, $recordAudit) {
+        Route::get('/users', function (Request $request) use ($ensureActive, $isAdmin) {
+            if ($inactiveResponse = $ensureActive($request)) {
+                return $inactiveResponse;
+            }
+
+            $actor = $request->user();
+            if (!$isAdmin($actor)) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            $validated = $request->validate([
+                'search' => ['nullable', 'string', 'max:255'],
+                'role' => ['nullable', Rule::in(User::ROLES)],
+                'status' => ['nullable', Rule::in(['active', 'inactive'])],
+            ]);
+
+            $users = User::query()
+                ->select('id', 'name', 'email', 'role', 'is_active', 'created_at', 'updated_at')
+                ->when(
+                    filled($validated['search'] ?? null),
+                    fn ($query) => $query->where(function ($inner) use ($validated) {
+                        $search = trim((string) $validated['search']);
+
+                        $inner->where('name', 'like', "%{$search}%")
+                            ->orWhere('email', 'like', "%{$search}%");
+                    })
+                )
+                ->when(
+                    filled($validated['role'] ?? null),
+                    fn ($query) => $query->where('role', $validated['role'])
+                )
+                ->when(
+                    filled($validated['status'] ?? null),
+                    fn ($query) => $query->where('is_active', $validated['status'] === 'active')
+                )
+                ->orderByDesc('id')
+                ->get();
+
+            return response()->json([
+                'users' => $users,
+            ]);
+        });
+
+        Route::post('/users', function (Request $request) use ($ensureActive, $isAdmin, $recordAudit) {
+            if ($inactiveResponse = $ensureActive($request)) {
+                return $inactiveResponse;
+            }
+
+            $actor = $request->user();
+            if (!$isAdmin($actor)) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            $validated = $request->validate([
+                'name' => ['required', 'string', 'max:255'],
+                'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+                'role' => ['required', Rule::in(User::ROLES)],
+                'password' => ['required', 'string', 'min:8'],
+                'is_active' => ['nullable', 'boolean'],
+            ]);
+
+            $user = User::create([
+                'name' => $validated['name'],
+                'email' => $validated['email'],
+                'role' => $validated['role'],
+                'is_active' => $validated['is_active'] ?? true,
+                'password' => $validated['password'],
+            ]);
+
+            $recordAudit(
+                $actor,
+                'admin.user.create',
+                'user',
+                $user->id,
+                'Admin created user account',
+                ['email' => $user->email, 'role' => $user->role, 'is_active' => $user->is_active],
+                $request,
+            );
+
+            return response()->json([
+                'message' => 'User created',
+                'user' => $user,
+            ], 201);
+        });
+
+        Route::patch('/users/{user}', function (Request $request, User $user) use ($ensureActive, $isAdmin, $recordAudit) {
+            if ($inactiveResponse = $ensureActive($request)) {
+                return $inactiveResponse;
+            }
+
+            $actor = $request->user();
+            if (!$isAdmin($actor)) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            $validated = $request->validate([
+                'name' => ['sometimes', 'required', 'string', 'max:255'],
+                'email' => ['sometimes', 'required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+                'role' => ['sometimes', 'required', Rule::in(User::ROLES)],
+                'is_active' => ['sometimes', 'required', 'boolean'],
+                'password' => ['sometimes', 'required', 'string', 'min:8'],
+            ]);
+
+            if ((int) $actor->id === (int) $user->id) {
+                if (($validated['is_active'] ?? true) === false) {
+                    return response()->json([
+                        'message' => 'You cannot disable your own account.',
+                    ], 422);
+                }
+
+                if (array_key_exists('role', $validated) && $validated['role'] !== User::ROLE_ADMIN) {
+                    return response()->json([
+                        'message' => 'You cannot remove your own admin role.',
+                    ], 422);
+                }
+            }
+
+            $user->fill(collect($validated)->except(['password'])->all());
+
+            if (array_key_exists('password', $validated)) {
+                $user->password = $validated['password'];
+            }
+
+            $user->save();
+
+            if (array_key_exists('is_active', $validated) && $validated['is_active'] === false) {
+                $user->tokens()->delete();
+            }
+
+            $recordAudit(
+                $actor,
+                'admin.user.update',
+                'user',
+                $user->id,
+                'Admin updated user account',
+                [
+                    'role' => $user->role,
+                    'is_active' => $user->is_active,
+                    'updated_fields' => array_keys($validated),
+                ],
+                $request,
+            );
+
+            return response()->json([
+                'message' => 'User updated',
+                'user' => $user,
+            ]);
+        });
+
+        Route::get('/rooms', function (Request $request) use ($ensureActive, $isAdmin) {
+            if ($inactiveResponse = $ensureActive($request)) {
+                return $inactiveResponse;
+            }
+
+            if (!$isAdmin($request->user())) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            $rooms = Room::query()
+                ->with('creator:id,name,email,role')
+                ->withCount(['members', 'exams'])
+                ->latest()
+                ->get();
+
+            return response()->json([
+                'rooms' => $rooms,
+            ]);
+        });
+
+        Route::get('/audit-logs', function (Request $request) use ($ensureActive, $isAdmin) {
+            if ($inactiveResponse = $ensureActive($request)) {
+                return $inactiveResponse;
+            }
+
+            if (!$isAdmin($request->user())) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            $limit = (int) $request->query('limit', 80);
+            $limit = max(1, min(200, $limit));
+
+            $logs = AuditLog::query()
+                ->with('actor:id,name,email,role')
+                ->latest()
+                ->limit($limit)
+                ->get();
+
+            return response()->json([
+                'logs' => $logs,
+            ]);
+        });
     });
 });
