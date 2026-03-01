@@ -46,6 +46,22 @@
           </label>
 
           <label class="field-group">
+            <span class="field-label">Student ID</span>
+            <div class="field-wrap">
+              <Hash :size="17" class="field-icon" />
+              <input
+                v-model="form.student_id"
+                type="text"
+                class="field-input"
+                placeholder="e.g. 2301290"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                autocomplete="off"
+              />
+            </div>
+          </label>
+
+          <label class="field-group">
             <span class="field-label">Email address</span>
             <div class="field-wrap">
               <Mail :size="17" class="field-icon" />
@@ -137,6 +153,7 @@ import {
   Eye,
   EyeOff,
   GraduationCap,
+  Hash,
   LockKeyhole,
   Mail,
   ShieldCheck,
@@ -145,6 +162,7 @@ import {
 
 const form = reactive({
   name: '',
+  student_id: '',
   email: '',
   password: '',
   password_confirmation: '',
@@ -179,8 +197,13 @@ const pwStrength = computed(() => {
 async function handleSubmit() {
   apiError.value = ''
 
-  if (!form.name || !form.email || !form.password || !form.password_confirmation) {
+  if (!form.name || !form.student_id || !form.email || !form.password || !form.password_confirmation) {
     apiError.value = 'Please complete all required fields.'
+    return
+  }
+
+  if (!/^\d{7,20}$/.test(form.student_id.trim())) {
+    apiError.value = 'Student ID must be 7 to 20 digits.'
     return
   }
 
@@ -196,7 +219,13 @@ async function handleSubmit() {
 
   isLoading.value = true
   try {
-    await auth.register(form.name, form.email, form.password, form.password_confirmation)
+    await auth.register(
+      form.name,
+      form.student_id.trim(),
+      form.email,
+      form.password,
+      form.password_confirmation,
+    )
     await router.push('/dashboard')
   } catch (error) {
     apiError.value = error.response?.data?.message ?? 'Registration failed. Please try again.'
@@ -570,4 +599,3 @@ async function handleSubmit() {
   }
 }
 </style>
-

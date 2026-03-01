@@ -16,28 +16,56 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        User::updateOrCreate([
-            'email' => 'student@example.com',
-        ], [
-            'name' => 'Student User',
-            'role' => User::ROLE_STUDENT,
-            'password' => Hash::make('Student123!'),
-        ]);
+        $defaultPassword = Hash::make('pass');
 
-        User::updateOrCreate([
-            'email' => 'teacher@example.com',
-        ], [
-            'name' => 'Teacher User',
-            'role' => User::ROLE_STAFF_MASTER_EXAMINER,
-            'password' => Hash::make('Teacher123!'),
-        ]);
+        for ($index = 0; $index < 12; $index++) {
+            $email = $index === 0
+                ? 'student@example.com'
+                : "student{$index}@example.com";
+
+            $name = $index === 0
+                ? 'Student User'
+                : "Student User {$index}";
+
+            User::updateOrCreate([
+                'email' => $email,
+            ], [
+                'name' => $name,
+                'student_id' => (string) (2301290 + $index),
+                'role' => User::ROLE_STUDENT,
+                'is_active' => true,
+                'password' => $defaultPassword,
+            ]);
+        }
+
+        for ($index = 0; $index < 3; $index++) {
+            $email = $index === 0
+                ? 'teacher@example.com'
+                : "teacher{$index}@example.com";
+
+            $name = $index === 0
+                ? 'Teacher User'
+                : "Teacher User {$index}";
+
+            User::updateOrCreate([
+                'email' => $email,
+            ], [
+                'name' => $name,
+                'student_id' => null,
+                'role' => User::ROLE_STAFF_MASTER_EXAMINER,
+                'is_active' => true,
+                'password' => $defaultPassword,
+            ]);
+        }
 
         User::updateOrCreate([
             'email' => 'admin@example.com',
         ], [
             'name' => 'Admin User',
+            'student_id' => null,
             'role' => User::ROLE_ADMIN,
-            'password' => Hash::make('Admin123!'),
+            'is_active' => true,
+            'password' => $defaultPassword,
         ]);
     }
 }

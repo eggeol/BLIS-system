@@ -44,9 +44,14 @@ This file is for coding agents. Keep it short, execution-focused, and updated wh
 
 Defined in `database/seeders/DatabaseSeeder.php`:
 
-- `student@example.com` / `Student123!` / `student`
-- `teacher@example.com` / `Teacher123!` / `staff_master_examiner`
-- `admin@example.com` / `Admin123!` / `admin`
+- Students (12 total): `student@example.com`, `student1@example.com` ... `student11@example.com`
+  - Password: `pass`
+  - Role: `student`
+  - Student IDs: `2301290` ... `2301301`
+- Teachers (3 total): `teacher@example.com`, `teacher1@example.com`, `teacher2@example.com`
+  - Password: `pass`
+  - Role: `staff_master_examiner`
+- Admin: `admin@example.com` / `pass` / `admin`
 
 ## Docker/Runtime Notes
 
@@ -65,7 +70,7 @@ Defined in `database/seeders/DatabaseSeeder.php`:
 - Run migrations: `docker compose exec -T php php artisan migrate`
 - Install PHP deps in container: `docker compose exec -T php composer install`
 - List users/roles quickly:
-  - `docker compose exec -T php php artisan tinker --execute="dump(App\\Models\\User::select('id','name','email','role')->get()->toArray());"`
+  - `docker compose exec -T php php artisan tinker --execute="dump(App\\Models\\User::select('id','name','email','student_id','role')->get()->toArray());"`
 
 ## Known Fast Fixes
 
@@ -78,7 +83,7 @@ Defined in `database/seeders/DatabaseSeeder.php`:
   - Check `docker ps` and remove conflicting containers before `up -d`.
 - New backend modules (API-backed):
   - Exams: `/api/exams` (CRUD + room assignment + optional `scheduled_at` datetime)
-    - Exams now support optional `question_bank_id` (required when publishing).
+    - Exams now support optional `question_bank_id`.
   - Student exam attempts:
     - `POST /api/student/exams/{exam}/start` (room-scoped start/resume)
     - `GET /api/student/exam-attempts/{attempt}`
@@ -86,7 +91,7 @@ Defined in `database/seeders/DatabaseSeeder.php`:
     - `POST /api/student/exam-attempts/{attempt}/submit`
   - Reports: `/api/reports/overview`
   - System settings: `/api/settings/system` (admin can update)
-  - Student room details (`GET /api/rooms/{room}`) only expose `published` assigned exams.
+  - Student room details (`GET /api/rooms/{room}`) expose assigned exams; attempt availability is enforced by `scheduled_at` and question set presence.
 
 ## Agent Working Style for This Repo
 

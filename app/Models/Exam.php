@@ -12,14 +12,18 @@ class Exam extends Model
 {
     use HasFactory;
 
-    public const STATUS_DRAFT = 'draft';
-    public const STATUS_PUBLISHED = 'published';
-    public const STATUS_ARCHIVED = 'archived';
+    public const DELIVERY_MODE_OPEN_NAVIGATION = 'open_navigation';
+    public const DELIVERY_MODE_TEACHER_PACED = 'teacher_paced';
+    public const DELIVERY_MODE_INSTANT_FEEDBACK = 'instant_feedback';
 
-    public const STATUSES = [
-        self::STATUS_DRAFT,
-        self::STATUS_PUBLISHED,
-        self::STATUS_ARCHIVED,
+    // Legacy values kept for backwards compatibility.
+    public const DELIVERY_MODE_STANDARD = 'standard';
+    public const DELIVERY_MODE_LIVE_QUIZ = 'live_quiz';
+
+    public const DELIVERY_MODES = [
+        self::DELIVERY_MODE_OPEN_NAVIGATION,
+        self::DELIVERY_MODE_TEACHER_PACED,
+        self::DELIVERY_MODE_INSTANT_FEEDBACK,
     ];
 
     /**
@@ -35,9 +39,9 @@ class Exam extends Model
         'total_items',
         'duration_minutes',
         'scheduled_at',
+        'delivery_mode',
         'one_take_only',
         'shuffle_questions',
-        'status',
         'created_by',
     ];
 

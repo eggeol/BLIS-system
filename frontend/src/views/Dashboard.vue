@@ -176,7 +176,157 @@
           </div>
 
           <template v-if="activeNav === 'room'">
-            <article class="surface-card room-shell-card">
+            <article v-if="roomLiveBoardActive" class="surface-card room-shell-card room-live-board-shell">
+              <header class="room-page-head">
+                <div class="room-page-title">
+                  <BarChart3 :size="18" />
+                  <h3>{{ liveBoardExam?.title || 'Live Quiz Board' }}</h3>
+                </div>
+                <button type="button" class="ghost-btn" @click="closeRoomLiveBoard">
+                  <ChevronLeft :size="14" />
+                  Back to Room
+                </button>
+              </header>
+
+              <p class="muted room-live-board-sub">
+                <span>{{ liveBoardRoom?.name || selectedRoom?.name || 'Room' }}</span>
+                <span v-if="liveBoardRoom?.code"> ({{ liveBoardRoom.code }})</span>
+                <span> • Updated {{ liveBoardLastUpdatedText }}</span>
+              </p>
+
+              <div v-if="liveBoardError" class="feedback danger">
+                <AlertCircle :size="15" />
+                <span>{{ liveBoardError }}</span>
+              </div>
+
+              <div class="live-board-toolbar">
+                <label class="check-item">
+                  <input v-model="liveBoardOptions.show_names" type="checkbox" />
+                  <span>Show Names</span>
+                </label>
+                <label class="check-item">
+                  <input v-model="liveBoardOptions.show_responses" type="checkbox" />
+                  <span>Show Responses</span>
+                </label>
+                <label class="check-item">
+                  <input v-model="liveBoardOptions.show_results" type="checkbox" />
+                  <span>Show Results</span>
+                </label>
+                <button type="button" class="ghost-btn" :disabled="liveBoardLoading || liveBoardRefreshing" @click="loadLiveBoard(false)">
+                  <RefreshCw :size="14" :class="{ 'spin-soft': liveBoardLoading || liveBoardRefreshing }" />
+                  Refresh
+                </button>
+              </div>
+
+              <div v-if="isLiveBoardTeacherPaced" class="management-inline">
+                <span class="pill neutral">Teacher Paced</span>
+                <span class="pill navy">
+                  Current:
+                  {{
+                    liveBoardTeacherPacing?.is_active
+                      ? `Q${liveBoardTeacherPacing.current_item_number ?? 1}`
+                      : 'Not started'
+                  }}
+                </span>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="liveBoardLoading || liveBoardRefreshing || liveBoardTeacherPacingBusy || liveBoardTeacherPacing?.is_active"
+                  @click="updateTeacherPacing('start')"
+                >
+                  Start
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="liveBoardLoading || liveBoardRefreshing || liveBoardTeacherPacingBusy || !liveBoardTeacherPacing?.is_active"
+                  @click="updateTeacherPacing('previous')"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="liveBoardLoading || liveBoardRefreshing || liveBoardTeacherPacingBusy || !liveBoardTeacherPacing?.is_active"
+                  @click="updateTeacherPacing('next')"
+                >
+                  Next
+                </button>
+                <button
+                  type="button"
+                  class="danger-btn"
+                  :disabled="liveBoardLoading || liveBoardRefreshing || liveBoardTeacherPacingBusy || !liveBoardTeacherPacing?.is_active"
+                  @click="updateTeacherPacing('stop')"
+                >
+                  Stop
+                </button>
+              </div>
+
+              <div class="management-inline live-board-summary">
+                <span class="pill neutral">{{ liveBoardSummary.students_total }} student(s)</span>
+                <span class="pill navy">{{ liveBoardSummary.attempts_started }} started</span>
+                <span class="pill success">{{ liveBoardSummary.attempts_submitted }} submitted</span>
+              </div>
+
+              <div v-if="liveBoardLoading" class="room-empty-state compact">
+                <RefreshCw :size="30" class="spin-soft" />
+                <h4>Loading Live Board</h4>
+                <p>Fetching latest student responses.</p>
+              </div>
+
+              <div v-else-if="liveBoardRows.length === 0" class="room-empty-state compact">
+                <FileText :size="34" />
+                <h4>No Student Data Yet</h4>
+                <p>Students will appear here when they are enrolled and start answering.</p>
+              </div>
+
+              <div v-else class="live-board-table-wrap">
+                <table class="live-board-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Progress</th>
+                      <th v-for="item in liveBoardItemSummary" :key="`live-head-${item.item_number}`">
+                        {{ item.item_number }}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, rowIndex) in liveBoardRows" :key="row.user.id">
+                      <td class="live-board-name-cell">
+                        <strong>{{ liveBoardDisplayName(row, rowIndex) }}</strong>
+                        <small v-if="liveBoardOptions.show_names && row.user.student_id" class="muted">
+                          ID {{ row.user.student_id }}
+                        </small>
+                      </td>
+                      <td class="live-board-progress-cell">
+                        <span class="pill" :class="row.attempt?.status === 'submitted' ? 'success' : 'neutral'">
+                          {{ liveBoardProgressLabel(row) }}
+                        </span>
+                      </td>
+                      <td
+                        v-for="item in row.items"
+                        :key="`live-cell-${row.user.id}-${item.item_number}`"
+                        class="live-board-answer-cell"
+                        :class="liveBoardCellClass(item)"
+                      >
+                        {{ liveBoardCellText(item) }}
+                      </td>
+                    </tr>
+                  </tbody>
+                  <tfoot v-if="liveBoardItemSummary.length > 0">
+                    <tr>
+                      <th colspan="2">Class Total</th>
+                      <th v-for="item in liveBoardItemSummary" :key="`live-total-${item.item_number}`">
+                        {{ liveBoardItemSummaryText(item) }}
+                      </th>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </article>
+
+            <article v-else class="surface-card room-shell-card">
               <header class="room-page-head">
                 <div class="room-page-title">
                   <DoorOpen :size="18" />
@@ -271,7 +421,20 @@
                             <div>
                               <strong class="exam-card-title">{{ exam.title }}</strong>
                               <p class="exam-card-meta">{{ exam.progress ?? '0 / 0 answered' }}</p>
+                              <p class="exam-card-meta">{{ examDeliveryModeLabel(exam.delivery_mode) }}</p>
                               <p class="exam-card-date">Schedule: {{ formatExamSchedule(exam.scheduled_at) }}</p>
+                            </div>
+
+                            <div class="exam-card-actions">
+                              <button
+                                type="button"
+                                class="primary-btn exam-start-btn"
+                                :disabled="liveBoardLoading || liveBoardRefreshing"
+                                @click="openRoomLiveBoard(exam)"
+                              >
+                                <BarChart3 :size="14" />
+                                Open Live Board
+                              </button>
                             </div>
                           </article>
                         </div>
@@ -500,6 +663,7 @@
                             <div>
                               <strong class="exam-card-title">{{ exam.title }}</strong>
                               <p class="exam-card-meta">{{ exam.total_items }} items • {{ exam.duration_minutes }} mins</p>
+                              <p class="exam-card-meta">{{ examDeliveryModeLabel(exam.delivery_mode) }}</p>
                               <p class="exam-card-date">{{ studentExamAvailabilityText(exam) }}</p>
                             </div>
                             <button
@@ -621,6 +785,9 @@
                       <span v-if="studentExamAttempt" class="pill neutral">
                         {{ studentExamAttempt.answered_count }}/{{ studentExamAttempt.total_items }} answered
                       </span>
+                      <span v-if="selectedStudentExam" class="pill neutral">
+                        {{ examDeliveryModeLabel(selectedStudentExam.delivery_mode) }}
+                      </span>
                       <span v-if="studentExamAttempt && !isStudentExamSubmitted && studentExamRemainingSeconds !== null" class="pill navy">
                         Time: {{ formatRemainingDuration(studentExamRemainingSeconds) }}
                       </span>
@@ -651,11 +818,19 @@
                   <div v-else-if="studentExamAttempt" class="exam-attempt-layout">
                     <aside class="exam-attempt-sidebar">
                       <div class="exam-status-legend">
-                        <template v-if="!isStudentExamSubmitted">
+                        <template v-if="!isStudentExamSubmitted && isStudentOpenNavigationMode">
                           <span class="legend-item"><i class="legend-dot current" /> Current</span>
                           <span class="legend-item"><i class="legend-dot answered" /> Answered</span>
                           <span class="legend-item"><i class="legend-dot blank" /> Blank</span>
                           <span class="legend-item"><i class="legend-ribbon" /> Bookmarked</span>
+                        </template>
+                        <template v-else-if="!isStudentExamSubmitted && isStudentTeacherPacedMode">
+                          <span class="legend-item"><i class="legend-dot current" /> Teacher-controlled question</span>
+                          <span class="legend-item"><i class="legend-dot blank" /> Waiting for teacher pace</span>
+                        </template>
+                        <template v-else-if="!isStudentExamSubmitted && isStudentInstantFeedbackMode">
+                          <span class="legend-item"><i class="legend-dot current" /> Current</span>
+                          <span class="legend-item"><i class="legend-dot answered" /> Answered (locked)</span>
                         </template>
                         <template v-else>
                           <span class="legend-item"><i class="legend-dot current-outline" /> Current</span>
@@ -666,14 +841,14 @@
                         </template>
                       </div>
 
-                      <div class="exam-question-jump immersive">
+                      <div v-if="isStudentOpenNavigationMode || isStudentExamSubmitted" class="exam-question-jump immersive">
                         <button
                           v-for="(question, index) in studentExamQuestions"
                           :key="question.question_id"
                           type="button"
                           class="exam-jump-btn"
                           :class="questionPaletteClass(question, index)"
-                          :disabled="studentExamSaving || studentExamSubmitting || studentExamBookmarking"
+                          :disabled="studentExamSaving || studentExamSubmitting || studentExamBookmarking || (!isStudentOpenNavigationMode && !isStudentExamSubmitted)"
                           @click="goToStudentExamQuestionIndex(index)"
                         >
                           {{ question.item_number }}
@@ -687,6 +862,29 @@
                           <h4>Question {{ currentStudentExamQuestion.item_number }}</h4>
                           <span class="pill neutral">{{ currentStudentExamQuestion.question_type.replace('_', ' ') }}</span>
                         </header>
+
+                        <div v-if="!isStudentExamSubmitted && isStudentTeacherPacedMode" class="feedback info">
+                          <template v-if="isTeacherPacedSessionActive">
+                            <CheckCircle2 :size="15" />
+                            <span>
+                              Teacher Paced is active.
+                              {{
+                                currentTeacherPacedItemNumber
+                                  ? `Current class item: ${currentTeacherPacedItemNumber}`
+                                  : 'Waiting for current item...'
+                              }}
+                            </span>
+                          </template>
+                          <template v-else>
+                            <AlertCircle :size="15" />
+                            <span>Teacher Paced is enabled. Wait for your teacher to start the session.</span>
+                          </template>
+                        </div>
+
+                        <div v-if="!isStudentExamSubmitted && isStudentInstantFeedbackMode" class="feedback info">
+                          <CheckCircle2 :size="15" />
+                          <span>Instant Feedback mode: answer in order. Saved answers are locked.</span>
+                        </div>
 
                         <div v-if="currentQuestionStem.numberedItems.length > 0" class="exam-question-stem">
                           <p class="exam-attempt-question-text">{{ currentQuestionStem.leadText }}</p>
@@ -708,7 +906,7 @@
                             class="text-input textarea-input"
                             rows="5"
                             placeholder="Type your answer here..."
-                            :disabled="isStudentExamSubmitted || studentExamSaving || studentExamSubmitting || studentExamBookmarking"
+                            :disabled="isCurrentQuestionInputLocked"
                             @blur="handleStudentOpenEndedBlur"
                           />
                         </div>
@@ -723,14 +921,17 @@
                             <input
                               :checked="studentAnswerDraft.selected_option_id === option.id"
                               type="radio"
-                              :disabled="isStudentExamSubmitted || studentExamSaving || studentExamSubmitting || studentExamBookmarking"
+                              :disabled="isCurrentQuestionInputLocked"
                               @change="handleStudentOptionSelect(option.id)"
                             />
                             <span>{{ option.label }}. {{ option.text }}</span>
                           </label>
                         </div>
 
-                        <div v-if="isStudentExamSubmitted" class="exam-attempt-review">
+                        <div
+                          v-if="isStudentExamSubmitted || (isStudentInstantFeedbackMode && currentStudentExamQuestion.answer?.is_correct !== null)"
+                          class="exam-attempt-review"
+                        >
                           <p>
                             Your answer:
                             <strong>
@@ -770,7 +971,7 @@
 
                       <div class="exam-attempt-footer">
                         <button
-                          v-if="!isStudentExamSubmitted && currentStudentExamQuestion"
+                          v-if="!isStudentExamSubmitted && currentStudentExamQuestion && isStudentOpenNavigationMode"
                           type="button"
                           class="ghost-btn bookmark-toggle-btn"
                           :class="{ 'bookmark-active': currentStudentExamQuestion.is_bookmarked }"
@@ -780,7 +981,7 @@
                           <span>{{ currentStudentExamQuestion.is_bookmarked ? 'Remove Bookmark' : 'Bookmark' }}</span>
                         </button>
 
-                        <div class="exam-attempt-nav">
+                        <div v-if="isStudentOpenNavigationMode" class="exam-attempt-nav">
                           <button
                             type="button"
                             class="ghost-btn"
@@ -799,11 +1000,27 @@
                           </button>
                         </div>
 
+                        <div v-else-if="!isStudentExamSubmitted && isStudentInstantFeedbackMode" class="exam-attempt-nav">
+                          <button
+                            type="button"
+                            class="ghost-btn"
+                            :disabled="
+                              studentExamSaving
+                                || studentExamSubmitting
+                                || studentExamCurrentIndex >= studentExamQuestions.length - 1
+                                || !questionHasAnswer(currentStudentExamQuestion)
+                            "
+                            @click="goToStudentExamQuestion(1)"
+                          >
+                            Next Question
+                          </button>
+                        </div>
+
                         <button
                           v-if="!isStudentExamSubmitted"
                           type="button"
                           class="primary-btn"
-                          :disabled="studentExamSubmitting"
+                          :disabled="studentExamSubmitting || (isStudentInstantFeedbackMode && studentExamUnansweredCount > 0)"
                           @click="openStudentExamSubmitConfirm"
                         >
                           <RefreshCw v-if="studentExamSubmitting" :size="14" class="spin-soft" />
@@ -855,7 +1072,12 @@
                     <button type="button" class="ghost-btn" :disabled="studentExamSubmitting" @click="closeStudentExamSubmitConfirm">
                       Cancel
                     </button>
-                    <button type="button" class="danger-btn" :disabled="studentExamSubmitting" @click="confirmStudentExamSubmit">
+                    <button
+                      type="button"
+                      class="danger-btn"
+                      :disabled="studentExamSubmitting || (isStudentInstantFeedbackMode && studentExamUnansweredCount > 0)"
+                      @click="confirmStudentExamSubmit"
+                    >
                       <RefreshCw v-if="studentExamSubmitting" :size="14" class="spin-soft" />
                       <span>{{ studentExamSubmitting ? 'Submitting...' : 'Submit Final' }}</span>
                     </button>
@@ -1169,10 +1391,10 @@
               <article v-for="exam in exams" :key="exam.id" class="management-item">
                 <div class="management-item-main">
                   <strong>{{ exam.title }}</strong>
-                  <p>{{ exam.subject || 'General' }} • {{ exam.total_items }} items • {{ exam.duration_minutes }} mins</p>
+                  <p>{{ exam.question_bank?.subject || exam.subject || 'General' }} • {{ exam.total_items }} items • {{ exam.duration_minutes }} mins</p>
                   <div class="management-inline">
-                    <span class="pill neutral">{{ displayExamStatus(exam.status) }}</span>
                     <span class="pill navy">{{ exam.rooms_count ?? exam.rooms?.length ?? 0 }} room(s)</span>
+                    <span class="pill neutral">{{ examDeliveryModeLabel(exam.delivery_mode) }}</span>
                     <span class="pill" :class="exam.one_take_only ? 'success' : 'neutral'">
                       {{ exam.one_take_only ? 'One Take Only' : 'Retake Allowed' }}
                     </span>
@@ -1216,10 +1438,6 @@
                 </label>
 
                 <div class="inline-form exam-meta-row">
-                  <label class="field-stack grow">
-                    <span class="field-label">Subject</span>
-                    <input v-model.trim="examForm.subject" type="text" class="text-input" maxlength="255" />
-                  </label>
                   <label class="field-stack narrow">
                     <span class="field-label">Items</span>
                     <input v-model.number="examForm.total_items" type="number" min="1" max="1000" class="text-input" />
@@ -1229,15 +1447,6 @@
                     <input v-model.number="examForm.duration_minutes" type="number" min="1" max="600" class="text-input" />
                   </label>
                 </div>
-
-                <label class="field-stack">
-                  <span class="field-label">Status</span>
-                  <select v-model="examForm.status" class="text-input">
-                    <option value="draft">Draft</option>
-                    <option value="published">Published</option>
-                    <option value="archived">Archived</option>
-                  </select>
-                </label>
 
                 <label class="field-stack">
                   <span class="field-label">Question Set</span>
@@ -1254,7 +1463,16 @@
                 <label class="field-stack">
                   <span class="field-label">Schedule (optional)</span>
                   <input v-model="examForm.scheduled_at" type="datetime-local" class="text-input" />
-                  <small class="muted">Students can take this exam at or after the set schedule once published.</small>
+                  <small class="muted">Students can take this exam at or after the set schedule.</small>
+                </label>
+
+                <label class="field-stack">
+                  <span class="field-label">Quiz Delivery Mode</span>
+                  <select v-model="examForm.delivery_mode" class="text-input">
+                    <option value="open_navigation">Open Navigation (students can skip and review)</option>
+                    <option value="teacher_paced">Teacher Paced (teacher controls current question)</option>
+                    <option value="instant_feedback">Instant Feedback (immediate result, no skipping/editing)</option>
+                  </select>
                 </label>
 
                 <div class="field-stack">
@@ -1265,8 +1483,18 @@
                       <span>One take only (students cannot retake after submitting)</span>
                     </label>
                     <label class="check-item">
-                      <input v-model="examForm.shuffle_questions" type="checkbox" />
-                      <span>Shuffle questions for each attempt</span>
+                      <input
+                        v-model="examForm.shuffle_questions"
+                        type="checkbox"
+                        :disabled="normalizeExamDeliveryMode(examForm.delivery_mode) === 'teacher_paced'"
+                      />
+                      <span>
+                        {{
+                          normalizeExamDeliveryMode(examForm.delivery_mode) === 'teacher_paced'
+                            ? 'Shuffle disabled in Teacher Paced mode'
+                            : 'Shuffle questions for each attempt'
+                        }}
+                      </span>
                     </label>
                   </div>
                 </div>
@@ -1327,6 +1555,7 @@
               </div>
             </div>
           </teleport>
+
         </section>
 
         <section v-else-if="activeNav === 'reports'" class="dashboard-view">
@@ -1474,7 +1703,7 @@
             </header>
 
             <div class="management-toolbar">
-              <input v-model.trim="userFilters.search" type="text" class="text-input" placeholder="Search name or email" />
+              <input v-model.trim="userFilters.search" type="text" class="text-input" placeholder="Search name, email, or student ID" />
               <select v-model="userFilters.role" class="text-input narrow">
                 <option value="">All roles</option>
                 <option value="student">Student</option>
@@ -1509,6 +1738,7 @@
                 <div class="management-item-main">
                   <strong>{{ user.name }}</strong>
                   <p>{{ user.email }}</p>
+                  <p v-if="user.student_id" class="muted">Student ID: {{ user.student_id }}</p>
                   <div class="management-inline">
                     <span class="pill neutral">{{ displayMemberRole(user.role) }}</span>
                     <span class="pill" :class="user.is_active ? 'success' : 'neutral'">
@@ -1547,6 +1777,19 @@
                   <input v-model.trim="userForm.email" type="email" class="text-input" maxlength="255" />
                 </label>
 
+                <label class="field-stack">
+                  <span class="field-label">Student ID</span>
+                  <input
+                    v-model.trim="userForm.student_id"
+                    type="text"
+                    class="text-input"
+                    maxlength="32"
+                    inputmode="numeric"
+                    placeholder="e.g. 2301290"
+                  />
+                  <small class="muted">Required for student accounts. Leave blank for staff/admin.</small>
+                </label>
+
                 <div class="inline-form">
                   <label class="field-stack grow">
                     <span class="field-label">Role</span>
@@ -1572,7 +1815,7 @@
                   <button
                     type="button"
                     class="primary-btn"
-                    :disabled="usersSaving || !userForm.name.trim() || !userForm.email.trim() || (!userForm.id && userForm.password.length < 8)"
+                    :disabled="usersSaving || !userForm.name.trim() || !userForm.email.trim() || (userForm.role === 'student' && !userForm.student_id.trim()) || (!userForm.id && userForm.password.length < 8)"
                     @click="handleSaveUser"
                   >
                     <RefreshCw v-if="usersSaving" :size="14" class="spin-soft" />
@@ -1719,7 +1962,28 @@ const examError = ref('')
 const examMessage = ref('')
 const showExamModal = ref(false)
 const showDeleteExamModal = ref(false)
+const roomLiveBoardActive = ref(false)
 const selectedExam = ref(null)
+const liveBoardExam = ref(null)
+const liveBoardRoomId = ref(null)
+const liveBoardRows = ref([])
+const liveBoardItemSummary = ref([])
+const liveBoardSummary = ref({
+  students_total: 0,
+  attempts_started: 0,
+  attempts_submitted: 0,
+})
+const liveBoardLoading = ref(false)
+const liveBoardRefreshing = ref(false)
+const liveBoardError = ref('')
+const liveBoardUpdatedAt = ref(null)
+const liveBoardTeacherPacing = ref(null)
+const liveBoardTeacherPacingBusy = ref(false)
+const liveBoardOptions = reactive({
+  show_names: true,
+  show_responses: true,
+  show_results: true,
+})
 const showExamSimulationModal = ref(false)
 const showStudentSubmitConfirmModal = ref(false)
 const showStudentExitConfirmModal = ref(false)
@@ -1734,6 +1998,7 @@ const studentExamSubmitting = ref(false)
 const studentExamError = ref('')
 const studentExamRemainingSeconds = ref(null)
 const studentExamVisitedQuestionIds = ref([])
+const studentExamTeacherPacing = ref(null)
 const studentAnswerDraft = reactive({
   selected_option_id: null,
   answer_text: '',
@@ -1741,15 +2006,14 @@ const studentAnswerDraft = reactive({
 const examForm = reactive({
   id: null,
   title: '',
-  subject: '',
   description: '',
   question_bank_id: null,
   total_items: 60,
   duration_minutes: 90,
   scheduled_at: '',
+  delivery_mode: 'open_navigation',
   one_take_only: false,
   shuffle_questions: false,
-  status: 'draft',
   room_ids: [],
 })
 
@@ -1786,6 +2050,7 @@ const userForm = reactive({
   id: null,
   name: '',
   email: '',
+  student_id: '',
   role: 'student',
   is_active: true,
   password: '',
@@ -1797,6 +2062,9 @@ const auditError = ref('')
 
 let mobileMediaQuery
 let studentExamTimerInterval
+let studentExamSyncInterval
+let liveBoardRefreshInterval
+let studentExamSyncing = false
 
 const normalizedRole = computed(() => String(auth.user?.role ?? 'student').toLowerCase())
 const isManagementRole = computed(() => ['admin', 'staff_master_examiner', 'faculty'].includes(normalizedRole.value))
@@ -1896,8 +2164,92 @@ const isStudentExamSubmitted = computed(() => (
   String(studentExamAttempt.value?.status ?? '') === 'submitted'
 ))
 
+const currentStudentExamDeliveryMode = computed(() => (
+  normalizeExamDeliveryMode(selectedStudentExam.value?.delivery_mode)
+))
+
+const isStudentOpenNavigationMode = computed(() => (
+  currentStudentExamDeliveryMode.value === 'open_navigation'
+))
+
+const isStudentTeacherPacedMode = computed(() => (
+  currentStudentExamDeliveryMode.value === 'teacher_paced'
+))
+
+const isStudentInstantFeedbackMode = computed(() => (
+  currentStudentExamDeliveryMode.value === 'instant_feedback'
+))
+
+const currentTeacherPacedItemNumber = computed(() => {
+  const itemNumber = Number(studentExamTeacherPacing.value?.current_item_number ?? 0)
+  return Number.isFinite(itemNumber) && itemNumber > 0 ? itemNumber : null
+})
+
+const isTeacherPacedSessionActive = computed(() => (
+  Boolean(studentExamTeacherPacing.value?.is_active)
+))
+
+const isCurrentTeacherPacedQuestion = computed(() => {
+  if (!isStudentTeacherPacedMode.value) return true
+  if (!isTeacherPacedSessionActive.value) return false
+
+  return Number(currentStudentExamQuestion.value?.item_number) === currentTeacherPacedItemNumber.value
+})
+
+const isCurrentInstantFeedbackQuestionLocked = computed(() => (
+  isStudentInstantFeedbackMode.value
+    && !isStudentExamSubmitted.value
+    && questionHasAnswer(currentStudentExamQuestion.value)
+))
+
+const isCurrentQuestionInputLocked = computed(() => (
+  isStudentExamSubmitted.value
+    || studentExamSaving.value
+    || studentExamSubmitting.value
+    || studentExamBookmarking.value
+    || (isStudentTeacherPacedMode.value && !isCurrentTeacherPacedQuestion.value)
+    || isCurrentInstantFeedbackQuestionLocked.value
+))
+
+const studentInstantNextRequiredIndex = computed(() => {
+  if (!isStudentInstantFeedbackMode.value || isStudentExamSubmitted.value) {
+    return studentExamQuestions.value.length - 1
+  }
+
+  const nextRequiredItem = Number(studentExamAttempt.value?.next_required_item_number ?? 0)
+  if (!Number.isFinite(nextRequiredItem) || nextRequiredItem < 1) {
+    return studentExamQuestions.value.length - 1
+  }
+
+  const index = studentExamQuestions.value.findIndex((question) => Number(question.item_number) === nextRequiredItem)
+  return index >= 0 ? index : studentExamQuestions.value.length - 1
+})
+
 const studentExamUnansweredCount = computed(() => (
   studentExamQuestions.value.filter((question) => !questionHasAnswer(question)).length
+))
+
+const liveBoardRoom = computed(() => {
+  const roomId = Number(liveBoardRoomId.value)
+  if (!Number.isFinite(roomId) || roomId < 1) return null
+
+  if (Number(selectedRoom.value?.id) === roomId) {
+    return selectedRoom.value
+  }
+
+  return rooms.value.find((room) => Number(room.id) === roomId) ?? null
+})
+
+const liveBoardLastUpdatedText = computed(() => (
+  liveBoardUpdatedAt.value ? formatClockTime(liveBoardUpdatedAt.value) : 'n/a'
+))
+
+const liveBoardDeliveryMode = computed(() => (
+  normalizeExamDeliveryMode(liveBoardExam.value?.delivery_mode)
+))
+
+const isLiveBoardTeacherPaced = computed(() => (
+  liveBoardDeliveryMode.value === 'teacher_paced'
 ))
 
 watchEffect(() => {
@@ -1938,6 +2290,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearStudentExamTimer()
+  stopStudentExamAutoSync()
+  stopLiveBoardAutoRefresh()
 
   if (!mobileMediaQuery) return
 
@@ -1962,11 +2316,19 @@ function displayMemberRole(role) {
   return 'Student'
 }
 
-function displayExamStatus(status) {
-  const normalized = String(status ?? '').toLowerCase()
-  if (normalized === 'published') return 'Published'
-  if (normalized === 'archived') return 'Archived'
-  return 'Draft'
+function normalizeExamDeliveryMode(mode) {
+  const normalized = String(mode ?? '').toLowerCase()
+
+  if (normalized === 'teacher_paced' || normalized === 'live_quiz') return 'teacher_paced'
+  if (normalized === 'instant_feedback') return 'instant_feedback'
+  return 'open_navigation'
+}
+
+function examDeliveryModeLabel(mode) {
+  const normalized = normalizeExamDeliveryMode(mode)
+  if (normalized === 'teacher_paced') return 'Teacher Paced'
+  if (normalized === 'instant_feedback') return 'Instant Feedback'
+  return 'Open Navigation'
 }
 
 function parseDateTime(value) {
@@ -1982,22 +2344,26 @@ function formatDateTime(value) {
   return parseDateTime(value)?.toLocaleString() ?? 'n/a'
 }
 
+function formatClockTime(value) {
+  const parsed = parseDateTime(value)
+  if (!parsed) return 'n/a'
+
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`
+}
+
 function formatExamSchedule(value) {
   return parseDateTime(value)?.toLocaleString() ?? 'No schedule set'
 }
 
 function formatRemainingDuration(totalSeconds) {
-  const safeSeconds = Math.max(0, Number(totalSeconds ?? 0))
+  const safeSeconds = Math.max(0, Math.floor(Number(totalSeconds ?? 0)))
   const hours = Math.floor(safeSeconds / 3600)
   const minutes = Math.floor((safeSeconds % 3600) / 60)
   const seconds = safeSeconds % 60
   const pad = (part) => String(part).padStart(2, '0')
 
-  if (hours > 0) {
-    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
-  }
-
-  return `${pad(minutes)}:${pad(seconds)}`
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
 }
 
 function splitQuestionStemAndNumberedItems(questionText) {
@@ -2064,8 +2430,6 @@ function toExamSchedulePayload(value) {
 }
 
 function canStudentTakeExam(exam) {
-  const status = String(exam?.status ?? '').toLowerCase()
-  if (status !== 'published') return false
   if (!exam?.question_bank_id) return false
 
   const schedule = parseDateTime(exam?.scheduled_at)
@@ -2075,10 +2439,6 @@ function canStudentTakeExam(exam) {
 }
 
 function studentExamAvailabilityText(exam) {
-  const status = String(exam?.status ?? '').toLowerCase()
-
-  if (status === 'draft') return 'Not available yet (draft)'
-  if (status === 'archived') return 'Not available (archived)'
   if (!exam?.question_bank_id) return 'Not available (no question set linked)'
   if (canStudentTakeExam(exam)) return 'Available now'
 
@@ -2111,6 +2471,44 @@ function startStudentExamTimer(remainingSeconds) {
 
     studentExamRemainingSeconds.value -= 1
   }, 1000)
+}
+
+function stopStudentExamAutoSync() {
+  if (!studentExamSyncInterval) return
+  clearInterval(studentExamSyncInterval)
+  studentExamSyncInterval = null
+  studentExamSyncing = false
+}
+
+async function refreshStudentExamAttemptStatus(silent = true) {
+  if (!showExamSimulationModal.value || isStudentExamSubmitted.value) return
+  if (studentExamLoading.value || studentExamSaving.value || studentExamSubmitting.value || studentExamBookmarking.value) return
+  if (studentExamSyncing) return
+
+  const attemptId = studentExamAttempt.value?.id
+  if (!attemptId) return
+
+  const currentQuestionId = currentStudentExamQuestion.value?.question_id ?? null
+  studentExamSyncing = true
+
+  try {
+    const { data } = await api.get(`/student/exam-attempts/${attemptId}`)
+    applyStudentAttemptPayload(data, currentQuestionId)
+  } catch (error) {
+    if (!silent) {
+      studentExamError.value = firstApiError(error, 'Unable to refresh attempt status.')
+    }
+  } finally {
+    studentExamSyncing = false
+  }
+}
+
+function startStudentExamAutoSync() {
+  stopStudentExamAutoSync()
+
+  studentExamSyncInterval = setInterval(() => {
+    refreshStudentExamAttemptStatus(true)
+  }, 4000)
 }
 
 function syncStudentAnswerDraft() {
@@ -2195,15 +2593,14 @@ function questionPaletteClass(question, index) {
 function resetExamForm() {
   examForm.id = null
   examForm.title = ''
-  examForm.subject = ''
   examForm.description = ''
   examForm.question_bank_id = null
   examForm.total_items = 60
   examForm.duration_minutes = 90
   examForm.scheduled_at = ''
+  examForm.delivery_mode = 'open_navigation'
   examForm.one_take_only = false
   examForm.shuffle_questions = false
-  examForm.status = 'draft'
   examForm.room_ids = []
 }
 
@@ -2217,7 +2614,6 @@ function openCreateExamModal() {
 function openEditExamModal(exam) {
   examForm.id = exam.id
   examForm.title = exam.title ?? ''
-  examForm.subject = exam.subject ?? ''
   examForm.description = exam.description ?? ''
   examForm.question_bank_id = exam.question_bank_id
     ? Number(exam.question_bank_id)
@@ -2225,9 +2621,9 @@ function openEditExamModal(exam) {
   examForm.total_items = Number(exam.total_items ?? 1)
   examForm.duration_minutes = Number(exam.duration_minutes ?? 1)
   examForm.scheduled_at = toDateTimeLocalValue(exam.scheduled_at)
+  examForm.delivery_mode = normalizeExamDeliveryMode(exam.delivery_mode)
   examForm.one_take_only = Boolean(exam.one_take_only)
   examForm.shuffle_questions = Boolean(exam.shuffle_questions)
-  examForm.status = exam.status ?? 'draft'
   examForm.room_ids = (exam.rooms ?? []).map((room) => room.id)
   examError.value = ''
   examMessage.value = ''
@@ -2251,10 +2647,17 @@ function closeDeleteExamModal() {
 
 function applyStudentAttemptPayload(payload, preferredQuestionId = null) {
   const previousVisitedQuestionIds = [...studentExamVisitedQuestionIds.value]
+  const examPayload = payload?.exam
+    ? {
+        ...payload.exam,
+        delivery_mode: normalizeExamDeliveryMode(payload.exam.delivery_mode),
+      }
+    : null
 
   studentExamAttempt.value = payload?.attempt ?? null
-  selectedStudentExam.value = payload?.exam ?? selectedStudentExam.value
+  selectedStudentExam.value = examPayload ?? selectedStudentExam.value
   studentExamQuestions.value = payload?.questions ?? []
+  studentExamTeacherPacing.value = payload?.teacher_pacing ?? null
 
   const answeredQuestionIds = studentExamQuestions.value
     .filter((question) => questionHasAnswer(question))
@@ -2269,9 +2672,21 @@ function applyStudentAttemptPayload(payload, preferredQuestionId = null) {
   const preferredIndex = preferredQuestionId
     ? studentExamQuestions.value.findIndex((question) => question.question_id === preferredQuestionId)
     : -1
+  const teacherPacedIndex = currentTeacherPacedItemNumber.value
+    ? studentExamQuestions.value.findIndex((question) => Number(question.item_number) === currentTeacherPacedItemNumber.value)
+    : -1
+  const instantMaxIndex = studentInstantNextRequiredIndex.value
 
-  if (preferredIndex >= 0) {
+  if (isStudentTeacherPacedMode.value && !isStudentExamSubmitted.value) {
+    if (teacherPacedIndex >= 0) {
+      studentExamCurrentIndex.value = teacherPacedIndex
+    } else {
+      studentExamCurrentIndex.value = 0
+    }
+  } else if (preferredIndex >= 0 && (!isStudentInstantFeedbackMode.value || preferredIndex <= instantMaxIndex)) {
     studentExamCurrentIndex.value = preferredIndex
+  } else if (isStudentInstantFeedbackMode.value && !isStudentExamSubmitted.value) {
+    studentExamCurrentIndex.value = Math.max(0, instantMaxIndex)
   } else if (defaultIndex >= 0) {
     studentExamCurrentIndex.value = defaultIndex
   } else {
@@ -2285,7 +2700,10 @@ function applyStudentAttemptPayload(payload, preferredQuestionId = null) {
 async function openExamSimulation(exam) {
   if (!canStudentTakeExam(exam) || !selectedRoomId.value) return
 
-  selectedStudentExam.value = exam
+  selectedStudentExam.value = {
+    ...exam,
+    delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
+  }
   studentExamError.value = ''
   showExamSimulationModal.value = true
   studentExamLoading.value = true
@@ -2311,8 +2729,10 @@ async function openExamSimulation(exam) {
     }
 
     applyStudentAttemptPayload(data)
+    startStudentExamAutoSync()
     roomMessage.value = data?.message ?? 'Exam attempt is ready.'
   } catch (error) {
+    stopStudentExamAutoSync()
     studentExamError.value = firstApiError(error, 'Unable to start exam attempt.')
   } finally {
     studentExamLoading.value = false
@@ -2321,6 +2741,7 @@ async function openExamSimulation(exam) {
 
 function closeExamSimulationModal() {
   clearStudentExamTimer()
+  stopStudentExamAutoSync()
 
   showExamSimulationModal.value = false
   showStudentSubmitConfirmModal.value = false
@@ -2336,6 +2757,7 @@ function closeExamSimulationModal() {
   studentExamError.value = ''
   studentExamRemainingSeconds.value = null
   studentExamVisitedQuestionIds.value = []
+  studentExamTeacherPacing.value = null
   studentAnswerDraft.selected_option_id = null
   studentAnswerDraft.answer_text = ''
 }
@@ -2344,8 +2766,25 @@ function goToStudentExamQuestionIndex(targetIndex) {
   const maxIndex = studentExamQuestions.value.length - 1
   if (maxIndex < 0) return
 
+  let resolvedTargetIndex = Math.min(Math.max(targetIndex, 0), maxIndex)
+
+  if (!isStudentExamSubmitted.value && isStudentTeacherPacedMode.value) {
+    if (!isTeacherPacedSessionActive.value) return
+
+    const teacherPacedIndex = currentTeacherPacedItemNumber.value
+      ? studentExamQuestions.value.findIndex((question) => Number(question.item_number) === currentTeacherPacedItemNumber.value)
+      : -1
+
+    if (teacherPacedIndex < 0) return
+    resolvedTargetIndex = teacherPacedIndex
+  }
+
+  if (!isStudentExamSubmitted.value && isStudentInstantFeedbackMode.value) {
+    resolvedTargetIndex = Math.min(resolvedTargetIndex, Math.max(0, studentInstantNextRequiredIndex.value))
+  }
+
   markCurrentQuestionVisited()
-  studentExamCurrentIndex.value = Math.min(Math.max(targetIndex, 0), maxIndex)
+  studentExamCurrentIndex.value = resolvedTargetIndex
   syncStudentAnswerDraft()
 }
 
@@ -2416,6 +2855,8 @@ async function saveStudentExamAnswer() {
   const attemptId = studentExamAttempt.value?.id
   const currentQuestion = currentStudentExamQuestion.value
   if (!attemptId || !currentQuestion || isStudentExamSubmitted.value) return
+  if (isStudentTeacherPacedMode.value && !isCurrentTeacherPacedQuestion.value) return
+  if (isStudentInstantFeedbackMode.value && questionHasAnswer(currentQuestion)) return
 
   const normalizedDraftText = studentAnswerDraft.answer_text?.trim() || null
   const normalizedSavedText = currentQuestion.answer?.answer_text?.trim() || null
@@ -2450,14 +2891,14 @@ async function saveStudentExamAnswer() {
 }
 
 async function handleStudentOptionSelect(optionId) {
-  if (isStudentExamSubmitted.value || studentExamSaving.value || studentExamSubmitting.value) return
+  if (isCurrentQuestionInputLocked.value) return
 
   studentAnswerDraft.selected_option_id = Number(optionId)
   await saveStudentExamAnswer()
 }
 
 async function handleStudentOpenEndedBlur() {
-  if (isStudentExamSubmitted.value || studentExamSaving.value || studentExamSubmitting.value) return
+  if (isCurrentQuestionInputLocked.value) return
 
   await saveStudentExamAnswer()
 }
@@ -2466,6 +2907,7 @@ async function toggleCurrentQuestionBookmark() {
   const attemptId = studentExamAttempt.value?.id
   const currentQuestion = currentStudentExamQuestion.value
   if (!attemptId || !currentQuestion || isStudentExamSubmitted.value) return
+  if (!isStudentOpenNavigationMode.value) return
   if (studentExamBookmarking.value) return
 
   studentExamBookmarking.value = true
@@ -2507,6 +2949,7 @@ function resetUserForm() {
   userForm.id = null
   userForm.name = ''
   userForm.email = ''
+  userForm.student_id = ''
   userForm.role = 'student'
   userForm.is_active = true
   userForm.password = ''
@@ -2523,6 +2966,7 @@ function openEditUserModal(user) {
   userForm.id = user.id
   userForm.name = user.name ?? ''
   userForm.email = user.email ?? ''
+  userForm.student_id = user.student_id ?? ''
   userForm.role = user.role ?? 'student'
   userForm.is_active = Boolean(user.is_active)
   userForm.password = ''
@@ -2659,7 +3103,10 @@ async function fetchRoomDetails(roomId) {
       ? {
           ...room,
           members: room.members ?? [],
-          assigned_exams: room.assigned_exams ?? [],
+          assigned_exams: (room.assigned_exams ?? []).map((exam) => ({
+            ...exam,
+            delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
+          })),
         }
       : null
     selectedRoomId.value = room?.id ?? null
@@ -2675,6 +3122,7 @@ async function fetchRoomDetails(roomId) {
 
 async function selectRoom(roomId) {
   closeExamSimulationModal()
+  closeRoomLiveBoard()
   await fetchRoomDetails(roomId)
 }
 
@@ -2854,7 +3302,10 @@ async function loadExams() {
       fetchManageableRooms(),
       fetchExamQuestionBanks(),
     ])
-    exams.value = examData.exams ?? []
+    exams.value = (examData.exams ?? []).map((exam) => ({
+      ...exam,
+      delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
+    }))
   } catch (error) {
     examError.value = firstApiError(error, 'Unable to load exams right now.')
   } finally {
@@ -2877,11 +3328,6 @@ async function handleSaveExam() {
   }
 
   const selectedBank = examQuestionBanks.value.find((bank) => bank.id === Number(examForm.question_bank_id))
-  if (examForm.status === 'published' && !examForm.question_bank_id) {
-    examError.value = 'Select a question set before publishing an exam.'
-    examSaving.value = false
-    return
-  }
 
   if (selectedBank && Number(examForm.total_items) > Number(selectedBank.total_items)) {
     examError.value = 'Selected question bank does not have enough questions for the item count.'
@@ -2891,15 +3337,16 @@ async function handleSaveExam() {
 
   const payload = {
     title: examForm.title.trim(),
-    subject: examForm.subject.trim() || null,
     description: examForm.description.trim() || null,
     question_bank_id: examForm.question_bank_id ? Number(examForm.question_bank_id) : null,
     total_items: Number(examForm.total_items),
     duration_minutes: Number(examForm.duration_minutes),
     scheduled_at: scheduledAt,
+    delivery_mode: normalizeExamDeliveryMode(examForm.delivery_mode),
     one_take_only: Boolean(examForm.one_take_only),
-    shuffle_questions: Boolean(examForm.shuffle_questions),
-    status: examForm.status,
+    shuffle_questions: normalizeExamDeliveryMode(examForm.delivery_mode) === 'teacher_paced'
+      ? false
+      : Boolean(examForm.shuffle_questions),
     room_ids: [...examForm.room_ids],
   }
 
@@ -2938,6 +3385,194 @@ async function handleDeleteExam() {
   } finally {
     examSaving.value = false
   }
+}
+
+function resetLiveBoardState() {
+  liveBoardRows.value = []
+  liveBoardItemSummary.value = []
+  liveBoardSummary.value = {
+    students_total: 0,
+    attempts_started: 0,
+    attempts_submitted: 0,
+  }
+  liveBoardError.value = ''
+  liveBoardUpdatedAt.value = null
+  liveBoardTeacherPacing.value = null
+  liveBoardTeacherPacingBusy.value = false
+}
+
+function stopLiveBoardAutoRefresh() {
+  if (!liveBoardRefreshInterval) return
+  clearInterval(liveBoardRefreshInterval)
+  liveBoardRefreshInterval = null
+}
+
+function startLiveBoardAutoRefresh() {
+  stopLiveBoardAutoRefresh()
+  liveBoardRefreshInterval = setInterval(() => {
+    if (!roomLiveBoardActive.value || !liveBoardExam.value?.id || !liveBoardRoomId.value) return
+    loadLiveBoard(true)
+  }, 5000)
+}
+
+async function openRoomLiveBoard(exam) {
+  const roomId = Number(selectedRoom.value?.id ?? selectedRoomId.value)
+  if (!Number.isFinite(roomId) || roomId < 1) {
+    roomError.value = 'Select a room first before opening the live board.'
+    return
+  }
+
+  liveBoardExam.value = {
+    ...exam,
+    delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
+  }
+  liveBoardRoomId.value = roomId
+  liveBoardOptions.show_names = true
+  liveBoardOptions.show_responses = true
+  liveBoardOptions.show_results = true
+  resetLiveBoardState()
+  roomLiveBoardActive.value = true
+
+  if (typeof window !== 'undefined') {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  await loadLiveBoard(false)
+  startLiveBoardAutoRefresh()
+}
+
+function closeRoomLiveBoard() {
+  roomLiveBoardActive.value = false
+  stopLiveBoardAutoRefresh()
+  liveBoardExam.value = null
+  liveBoardRoomId.value = null
+  resetLiveBoardState()
+}
+
+async function loadLiveBoard(silent = false) {
+  const examId = liveBoardExam.value?.id
+  const roomId = Number(liveBoardRoomId.value)
+  if (!examId || !Number.isFinite(roomId) || roomId < 1) return
+
+  if (silent) {
+    liveBoardRefreshing.value = true
+  } else {
+    liveBoardLoading.value = true
+  }
+
+  if (!silent) {
+    liveBoardError.value = ''
+  }
+
+  try {
+    const { data } = await api.get(`/exams/${examId}/live-dashboard`, {
+      params: { room_id: roomId },
+    })
+
+    if (data?.exam) {
+      liveBoardExam.value = {
+        ...data.exam,
+        delivery_mode: normalizeExamDeliveryMode(data.exam.delivery_mode),
+      }
+    }
+
+    liveBoardRows.value = data.rows ?? []
+    liveBoardItemSummary.value = data.item_summary ?? []
+    liveBoardSummary.value = data.summary ?? {
+      students_total: 0,
+      attempts_started: 0,
+      attempts_submitted: 0,
+    }
+    liveBoardTeacherPacing.value = data.teacher_pacing ?? null
+    liveBoardUpdatedAt.value = data.generated_at ?? new Date().toISOString()
+  } catch (error) {
+    liveBoardError.value = firstApiError(error, 'Unable to load live dashboard.')
+  } finally {
+    if (silent) {
+      liveBoardRefreshing.value = false
+    } else {
+      liveBoardLoading.value = false
+    }
+  }
+}
+
+async function updateTeacherPacing(action) {
+  const examId = liveBoardExam.value?.id
+  const roomId = Number(liveBoardRoomId.value)
+  if (!examId || !Number.isFinite(roomId) || roomId < 1) return
+  if (!isLiveBoardTeacherPaced.value) return
+  if (liveBoardTeacherPacingBusy.value) return
+
+  liveBoardTeacherPacingBusy.value = true
+  liveBoardError.value = ''
+
+  try {
+    const { data } = await api.post(`/exams/${examId}/teacher-paced`, {
+      room_id: roomId,
+      action,
+    })
+
+    liveBoardTeacherPacing.value = data.teacher_pacing ?? liveBoardTeacherPacing.value
+    await loadLiveBoard(true)
+  } catch (error) {
+    liveBoardError.value = firstApiError(error, 'Unable to update teacher pacing.')
+  } finally {
+    liveBoardTeacherPacingBusy.value = false
+  }
+}
+
+function liveBoardDisplayName(row, index) {
+  if (liveBoardOptions.show_names) return row?.user?.name || 'Unknown Student'
+  return `Student ${index + 1}`
+}
+
+function liveBoardProgressLabel(row) {
+  if (!row?.attempt) return 'Not started'
+
+  const answered = Number(row.attempt.answered_count ?? 0)
+  const total = Number(row.attempt.total_items ?? 0)
+  const status = row.attempt.status === 'submitted' ? 'Submitted' : 'In progress'
+  return `${answered}/${total} • ${status}`
+}
+
+function liveBoardResponseText(item) {
+  const raw = String(item?.response ?? '').trim()
+  if (!raw) return 'Answered'
+  return raw.length > 30 ? `${raw.slice(0, 30)}...` : raw
+}
+
+function liveBoardCellText(item) {
+  if (!item?.answered) return '--'
+
+  if (liveBoardOptions.show_results) {
+    if (item.is_correct === true) {
+      return liveBoardOptions.show_responses ? `Correct: ${liveBoardResponseText(item)}` : 'Correct'
+    }
+    if (item.is_correct === false) {
+      return liveBoardOptions.show_responses ? `Wrong: ${liveBoardResponseText(item)}` : 'Wrong'
+    }
+  }
+
+  if (liveBoardOptions.show_responses) return liveBoardResponseText(item)
+  return 'Answered'
+}
+
+function liveBoardCellClass(item) {
+  if (!item?.answered) return 'pending'
+  if (!liveBoardOptions.show_results) return 'answered'
+  if (item.is_correct === true) return 'correct'
+  if (item.is_correct === false) return 'incorrect'
+  return 'answered'
+}
+
+function liveBoardItemSummaryText(item) {
+  if (liveBoardOptions.show_results) {
+    if (!Number.isFinite(Number(item?.correct_percent))) return '--'
+    return `${Number(item.correct_percent)}%`
+  }
+
+  if (!Number.isFinite(Number(item?.answered_percent))) return '--'
+  return `${Number(item.answered_percent)}%`
 }
 
 async function loadReports() {
@@ -3027,6 +3662,10 @@ async function loadAdminUsers() {
 async function handleSaveUser() {
   if (!isAdminRole.value) return
   if (!userForm.name.trim() || !userForm.email.trim()) return
+  if (userForm.role === 'student' && !/^\d{7,20}$/.test(userForm.student_id.trim())) {
+    usersError.value = 'Student ID must be 7 to 20 digits for student accounts.'
+    return
+  }
 
   usersSaving.value = true
   usersError.value = ''
@@ -3035,6 +3674,7 @@ async function handleSaveUser() {
   const payload = {
     name: userForm.name.trim(),
     email: userForm.email.trim(),
+    student_id: userForm.role === 'student' ? (userForm.student_id.trim() || null) : null,
     role: userForm.role,
     is_active: Boolean(userForm.is_active),
   }
@@ -3091,6 +3731,15 @@ watch(
 )
 
 watch(
+  () => examForm.delivery_mode,
+  (mode) => {
+    if (normalizeExamDeliveryMode(mode) === 'teacher_paced') {
+      examForm.shuffle_questions = false
+    }
+  },
+)
+
+watch(
   () => studentExamRemainingSeconds.value,
   async (remainingSeconds) => {
     if (remainingSeconds !== 0) return
@@ -3098,17 +3747,7 @@ watch(
     if (studentExamLoading.value || studentExamSaving.value || studentExamSubmitting.value) return
 
     clearStudentExamTimer()
-
-    const attemptId = studentExamAttempt.value?.id
-    const currentQuestionId = currentStudentExamQuestion.value?.question_id ?? null
-    if (!attemptId) return
-
-    try {
-      const { data } = await api.get(`/student/exam-attempts/${attemptId}`)
-      applyStudentAttemptPayload(data, currentQuestionId)
-    } catch (error) {
-      studentExamError.value = firstApiError(error, 'Unable to refresh attempt status.')
-    }
+    await refreshStudentExamAttemptStatus(false)
   },
 )
 
@@ -3133,6 +3772,10 @@ watch(
       closeUserModal()
     }
 
+    if (value !== 'room') {
+      closeRoomLiveBoard()
+    }
+
     if (['room', 'rooms'].includes(value)) {
       if (value !== 'room') {
         showCreateRoomModal.value = false
@@ -3141,6 +3784,7 @@ watch(
         showDeleteRoomModal.value = false
         showLeaveRoomModal.value = false
         closeExamSimulationModal()
+        closeRoomLiveBoard()
         selectedRoomId.value = null
         selectedRoom.value = null
       }
@@ -3154,6 +3798,7 @@ watch(
     showDeleteRoomModal.value = false
     showLeaveRoomModal.value = false
     closeExamSimulationModal()
+    closeRoomLiveBoard()
     selectedRoomId.value = null
     selectedRoom.value = null
     roomError.value = ''
@@ -4166,6 +4811,11 @@ const activities = DASHBOARD_ACTIVITIES
   margin: 8px 0 0;
   font-size: 13px;
   color: #666;
+}
+
+.exam-card-actions {
+  display: grid;
+  gap: 8px;
 }
 
 .exam-start-btn {
@@ -5252,6 +5902,134 @@ const activities = DASHBOARD_ACTIVITIES
   flex-wrap: wrap;
 }
 
+.room-live-board-shell {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.room-live-board-sub {
+  margin: -6px 0 0;
+  font-size: 13px;
+}
+
+.live-board-toolbar {
+  padding: 12px;
+  border: 1px solid rgba(13, 21, 71, 0.12);
+  border-radius: 12px;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(249, 248, 244, 0.93));
+}
+
+.live-board-summary {
+  padding: 0;
+}
+
+.live-board-table-wrap {
+  padding: 0;
+  max-height: min(66vh, 700px);
+  overflow: auto;
+}
+
+.live-board-table {
+  width: 100%;
+  min-width: 780px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.live-board-table th,
+.live-board-table td {
+  border: 1px solid rgba(13, 21, 71, 0.11);
+  padding: 8px;
+  vertical-align: top;
+}
+
+.live-board-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(26, 35, 126, 0.12), rgba(255, 255, 255, 0.98));
+  color: var(--lnu-navy-deep);
+  text-align: center;
+  font-size: 13px;
+}
+
+.live-board-table thead th:first-child,
+.live-board-table thead th:nth-child(2) {
+  text-align: left;
+}
+
+.live-board-name-cell {
+  min-width: 200px;
+}
+
+.live-board-name-cell strong {
+  display: block;
+  color: var(--lnu-navy-deep);
+}
+
+.live-board-name-cell small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.live-board-progress-cell {
+  min-width: 160px;
+}
+
+.live-board-answer-cell {
+  min-width: 130px;
+  max-width: 190px;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.3;
+  word-break: break-word;
+  background: rgba(236, 241, 247, 0.6);
+}
+
+.live-board-answer-cell.pending {
+  background: rgba(236, 241, 247, 0.6);
+  color: var(--lnu-text-muted);
+}
+
+.live-board-answer-cell.answered {
+  background: rgba(201, 168, 76, 0.16);
+  color: var(--lnu-text);
+}
+
+.live-board-answer-cell.correct {
+  background: rgba(67, 160, 71, 0.22);
+  color: #1f5125;
+}
+
+.live-board-answer-cell.incorrect {
+  background: rgba(229, 115, 115, 0.24);
+  color: #6f2323;
+}
+
+.live-board-table tfoot th {
+  background: rgba(13, 21, 71, 0.08);
+  color: var(--lnu-navy-deep);
+  font-size: 13px;
+  text-align: center;
+}
+
+.live-board-table tfoot th:first-child {
+  text-align: left;
+}
+
+.room-empty-state.compact {
+  min-height: 200px;
+  margin: 0 16px 16px;
+  border: 1px dashed rgba(13, 21, 71, 0.2);
+  border-radius: 12px;
+}
+
 .settings-grid {
   display: grid;
   gap: 12px;
@@ -5403,6 +6181,18 @@ const activities = DASHBOARD_ACTIVITIES
 
   .exam-meta-row {
     grid-template-columns: 1fr;
+  }
+
+  .live-board-toolbar {
+    align-items: stretch;
+  }
+
+  .live-board-toolbar .check-item {
+    width: auto;
+  }
+
+  .live-board-table {
+    min-width: 680px;
   }
 
   .exam-attempt-backdrop {
@@ -5620,6 +6410,20 @@ const activities = DASHBOARD_ACTIVITIES
     width: 100%;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-board-summary,
+  .live-board-table-wrap {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .live-board-toolbar {
+    padding: 12px;
+  }
+
+  .live-board-table {
+    min-width: 620px;
   }
 
   .room-code-value {

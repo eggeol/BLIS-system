@@ -84,6 +84,77 @@ $normalizeAnswerText = static function (?string $value): string {
     return Str::lower((string) $normalized);
 };
 
+$normalizeDeliveryMode = static function (?string $mode): string {
+    return match ((string) $mode) {
+        Exam::DELIVERY_MODE_OPEN_NAVIGATION,
+        Exam::DELIVERY_MODE_TEACHER_PACED,
+        Exam::DELIVERY_MODE_INSTANT_FEEDBACK => (string) $mode,
+        Exam::DELIVERY_MODE_LIVE_QUIZ => Exam::DELIVERY_MODE_TEACHER_PACED,
+        default => Exam::DELIVERY_MODE_OPEN_NAVIGATION,
+    };
+};
+
+$deliveryModeValidationModes = [
+    ...Exam::DELIVERY_MODES,
+    Exam::DELIVERY_MODE_STANDARD,
+    Exam::DELIVERY_MODE_LIVE_QUIZ,
+];
+
+$resolveTeacherPacedTotalItems = static function (Exam $exam): int {
+    $configuredItems = max(1, (int) $exam->total_items);
+
+    if (!$exam->question_bank_id) {
+        return $configuredItems;
+    }
+
+    $availableItems = DB::table('question_bank_questions')
+        ->where('question_bank_id', (int) $exam->question_bank_id)
+        ->count();
+
+    if ($availableItems < 1) {
+        return $configuredItems;
+    }
+
+    return max(1, min($configuredItems, (int) $availableItems));
+};
+
+$resolveTeacherPacingState = static function (int $examId, int $roomId): ?array {
+    $state = DB::table('exam_room_pacing_states')
+        ->select('is_active', 'current_item_number', 'started_at', 'updated_at')
+        ->where('exam_id', $examId)
+        ->where('room_id', $roomId)
+        ->first();
+
+    if (!$state) {
+        return null;
+    }
+
+    return [
+        'is_active' => (bool) $state->is_active,
+        'current_item_number' => is_null($state->current_item_number) ? null : (int) $state->current_item_number,
+        'started_at' => $state->started_at,
+        'updated_at' => $state->updated_at,
+    ];
+};
+
+$buildTeacherPacingPayload = static function (?array $state, int $totalItems): ?array {
+    if (is_null($state)) {
+        return null;
+    }
+
+    $currentItemNumber = is_null($state['current_item_number'] ?? null)
+        ? null
+        : max(1, min((int) $state['current_item_number'], max(1, $totalItems)));
+
+    return [
+        'is_active' => (bool) ($state['is_active'] ?? false),
+        'current_item_number' => $currentItemNumber,
+        'total_items' => max(1, $totalItems),
+        'started_at' => $state['started_at'] ?? null,
+        'updated_at' => $state['updated_at'] ?? null,
+    ];
+};
+
 $refreshAttemptMetrics = static function (ExamAttempt $attempt, bool $finalize = false): ExamAttempt {
     $answers = $attempt->answers()
         ->select('is_correct')
@@ -125,21 +196,44 @@ $autoSubmitExpiredAttempt = static function (ExamAttempt $attempt) use ($refresh
     return $refreshAttemptMetrics($attempt, true);
 };
 
-$buildAttemptPayload = static function (ExamAttempt $attempt): array {
+$buildAttemptPayload = static function (ExamAttempt $attempt) use (
+    $normalizeDeliveryMode,
+    $resolveTeacherPacingState,
+    $buildTeacherPacingPayload,
+    $resolveTeacherPacedTotalItems
+): array {
     $attempt->loadMissing([
-        'exam:id,title,subject,question_bank_id,total_items,duration_minutes,status,scheduled_at,one_take_only,shuffle_questions',
+        'exam:id,title,subject,question_bank_id,total_items,duration_minutes,scheduled_at,delivery_mode,one_take_only,shuffle_questions',
         'room:id,name,code',
         'attemptQuestions.question.options:id,question_bank_question_id,option_label,option_text,is_correct',
         'answers',
     ]);
 
+    $deliveryMode = $normalizeDeliveryMode($attempt->exam?->delivery_mode);
+    $isInstantFeedback = $deliveryMode === Exam::DELIVERY_MODE_INSTANT_FEEDBACK;
     $isSubmitted = $attempt->status === ExamAttempt::STATUS_SUBMITTED;
+    $showPerQuestionFeedback = $isSubmitted || $isInstantFeedback;
     $answersByQuestionId = $attempt->answers->keyBy('question_bank_question_id');
+
+    $teacherPacing = null;
+
+    if ($deliveryMode === Exam::DELIVERY_MODE_TEACHER_PACED && $attempt->exam) {
+        $teacherPacingState = $resolveTeacherPacingState((int) $attempt->exam_id, (int) $attempt->room_id);
+        $teacherPacing = $buildTeacherPacingPayload(
+            $teacherPacingState,
+            $resolveTeacherPacedTotalItems($attempt->exam),
+        );
+    }
 
     $questions = $attempt->attemptQuestions
         ->sortBy('item_number')
         ->values()
-        ->map(function (ExamAttemptQuestion $attemptQuestion) use ($answersByQuestionId, $isSubmitted): ?array {
+        ->map(function (ExamAttemptQuestion $attemptQuestion) use (
+            $answersByQuestionId,
+            $isSubmitted,
+            $isInstantFeedback,
+            $showPerQuestionFeedback
+        ): ?array {
             $question = $attemptQuestion->question;
 
             if (!$question) {
@@ -147,6 +241,7 @@ $buildAttemptPayload = static function (ExamAttempt $attempt): array {
             }
 
             $answer = $answersByQuestionId->get($question->id);
+            $hasAnswer = !is_null($answer);
 
             return [
                 'question_id' => $question->id,
@@ -163,9 +258,9 @@ $buildAttemptPayload = static function (ExamAttempt $attempt): array {
                 'answer' => [
                     'selected_option_id' => $answer?->question_bank_option_id,
                     'answer_text' => $answer?->answer_text,
-                    'is_correct' => $isSubmitted ? $answer?->is_correct : null,
+                    'is_correct' => $showPerQuestionFeedback && $hasAnswer ? $answer?->is_correct : null,
                 ],
-                'correct_answer' => $isSubmitted
+                'correct_answer' => ($isSubmitted || ($isInstantFeedback && $hasAnswer))
                     ? [
                         'label' => $question->answer_label,
                         'text' => $question->answer_text,
@@ -183,6 +278,16 @@ $buildAttemptPayload = static function (ExamAttempt $attempt): array {
         $remainingSeconds = max(0, now()->diffInSeconds($attempt->expires_at, false));
     }
 
+    $nextRequiredItemNumber = null;
+
+    if ($isInstantFeedback && !$isSubmitted) {
+        $nextRequired = $attempt->attemptQuestions
+            ->sortBy('item_number')
+            ->first(fn (ExamAttemptQuestion $attemptQuestion) => !$answersByQuestionId->has((int) $attemptQuestion->question_bank_question_id));
+
+        $nextRequiredItemNumber = $nextRequired?->item_number;
+    }
+
     return [
         'attempt' => [
             'id' => $attempt->id,
@@ -196,6 +301,7 @@ $buildAttemptPayload = static function (ExamAttempt $attempt): array {
             'expires_at' => $attempt->expires_at,
             'submitted_at' => $attempt->submitted_at,
             'remaining_seconds' => $remainingSeconds,
+            'next_required_item_number' => $nextRequiredItemNumber,
         ],
         'exam' => [
             'id' => $attempt->exam?->id ?? $attempt->exam_id,
@@ -204,8 +310,8 @@ $buildAttemptPayload = static function (ExamAttempt $attempt): array {
             'question_bank_id' => $attempt->exam?->question_bank_id,
             'total_items' => $attempt->exam?->total_items,
             'duration_minutes' => $attempt->exam?->duration_minutes,
-            'status' => $attempt->exam?->status,
             'scheduled_at' => $attempt->exam?->scheduled_at,
+            'delivery_mode' => $deliveryMode,
             'one_take_only' => (bool) ($attempt->exam?->one_take_only ?? false),
             'shuffle_questions' => (bool) ($attempt->exam?->shuffle_questions ?? false),
         ],
@@ -214,6 +320,7 @@ $buildAttemptPayload = static function (ExamAttempt $attempt): array {
             'name' => $attempt->room?->name,
             'code' => $attempt->room?->code,
         ],
+        'teacher_pacing' => $teacherPacing,
         'questions' => $questions,
     ];
 };
@@ -235,12 +342,14 @@ Route::post('/auth/register', function (Request $request) use ($recordAudit) {
 
     $validated = $request->validate([
         'name' => ['required', 'string', 'max:255'],
+        'student_id' => ['required', 'string', 'max:32', 'regex:/^\d{7,20}$/', 'unique:users,student_id'],
         'email' => ['required', 'email', 'max:255', 'unique:users,email'],
         'password' => ['required', 'min:8', 'confirmed'],
     ]);
 
     $user = User::create([
         'name' => $validated['name'],
+        'student_id' => trim((string) $validated['student_id']),
         'email' => $validated['email'],
         'role' => User::ROLE_STUDENT,
         'is_active' => true,
@@ -255,7 +364,7 @@ Route::post('/auth/register', function (Request $request) use ($recordAudit) {
         'user',
         $user->id,
         'Student account self-registered',
-        ['email' => $user->email, 'role' => $user->role],
+        ['email' => $user->email, 'student_id' => $user->student_id, 'role' => $user->role],
         $request,
     );
 
@@ -296,6 +405,11 @@ Route::middleware('auth:sanctum')->group(function () use (
     $recordAudit,
     $findAccessibleQuestionBank,
     $normalizeAnswerText,
+    $normalizeDeliveryMode,
+    $deliveryModeValidationModes,
+    $resolveTeacherPacedTotalItems,
+    $resolveTeacherPacingState,
+    $buildTeacherPacingPayload,
     $refreshAttemptMetrics,
     $autoSubmitExpiredAttempt,
     $buildAttemptPayload,
@@ -349,7 +463,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         return response()->json(['rooms' => $rooms]);
     });
 
-    Route::get('/rooms/{room}', function (Request $request, Room $room) use ($canManageRooms, $ensureActive, $isAdmin) {
+    Route::get('/rooms/{room}', function (Request $request, Room $room) use ($canManageRooms, $ensureActive, $isAdmin, $normalizeDeliveryMode) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
@@ -368,7 +482,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         }
 
         $members = $room->members()
-            ->select('users.id', 'users.name', 'users.email', 'users.role', 'users.is_active')
+            ->select('users.id', 'users.name', 'users.email', 'users.student_id', 'users.role', 'users.is_active')
             ->orderBy('users.name')
             ->get();
 
@@ -377,21 +491,23 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'exams.id',
                 'exams.title',
                 'exams.subject',
-                'exams.status',
                 'exams.question_bank_id',
                 'exams.total_items',
                 'exams.duration_minutes',
                 'exams.scheduled_at',
+                'exams.delivery_mode',
                 'exams.one_take_only',
                 'exams.shuffle_questions',
                 'exam_room.created_at as assigned_at'
             )
-            ->when(
-                !$canManageRooms($user),
-                fn ($query) => $query->where('exams.status', Exam::STATUS_PUBLISHED)
-            )
             ->orderByDesc('exam_room.created_at')
-            ->get();
+            ->get()
+            ->map(function ($assignedExam) use ($normalizeDeliveryMode) {
+                $assignedExam->delivery_mode = $normalizeDeliveryMode($assignedExam->delivery_mode);
+
+                return $assignedExam;
+            })
+            ->values();
 
         $roomData = [
             'id' => $room->id,
@@ -892,7 +1008,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
     });
 
-    Route::get('/exams', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin) {
+    Route::get('/exams', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin, $normalizeDeliveryMode) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
@@ -902,8 +1018,6 @@ Route::middleware('auth:sanctum')->group(function () use (
         if (!$canManageRooms($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
-
-        $status = $request->query('status');
 
         $query = Exam::query()
             ->with('creator:id,name')
@@ -916,16 +1030,26 @@ Route::middleware('auth:sanctum')->group(function () use (
             $query->where('created_by', $user->id);
         }
 
-        if (is_string($status) && in_array($status, Exam::STATUSES, true)) {
-            $query->where('status', $status);
-        }
+        $exams = $query->get()->map(function (Exam $exam) use ($normalizeDeliveryMode) {
+            $exam->delivery_mode = $normalizeDeliveryMode($exam->delivery_mode);
+
+            return $exam;
+        })->values();
 
         return response()->json([
-            'exams' => $query->get(),
+            'exams' => $exams,
         ]);
     });
 
-    Route::post('/exams', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit, $findAccessibleQuestionBank) {
+    Route::post('/exams', function (Request $request) use (
+        $canManageRooms,
+        $ensureActive,
+        $isAdmin,
+        $recordAudit,
+        $findAccessibleQuestionBank,
+        $normalizeDeliveryMode,
+        $deliveryModeValidationModes
+    ) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
@@ -938,21 +1062,21 @@ Route::middleware('auth:sanctum')->group(function () use (
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
-            'subject' => ['nullable', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'question_bank_id' => ['nullable', 'integer', 'exists:question_banks,id'],
             'total_items' => ['required', 'integer', 'min:1', 'max:1000'],
             'duration_minutes' => ['required', 'integer', 'min:1', 'max:600'],
             'scheduled_at' => ['nullable', 'date'],
+            'delivery_mode' => ['nullable', Rule::in($deliveryModeValidationModes)],
             'one_take_only' => ['nullable', 'boolean'],
             'shuffle_questions' => ['nullable', 'boolean'],
-            'status' => ['nullable', Rule::in(Exam::STATUSES)],
             'room_ids' => ['nullable', 'array'],
             'room_ids.*' => ['integer', 'exists:rooms,id'],
         ]);
 
+        $deliveryMode = $normalizeDeliveryMode($validated['delivery_mode'] ?? null);
+
         $questionBank = null;
-        $resolvedStatus = $validated['status'] ?? Exam::STATUS_DRAFT;
 
         if (!is_null($validated['question_bank_id'] ?? null)) {
             $questionBank = $findAccessibleQuestionBank(
@@ -974,23 +1098,19 @@ Route::middleware('auth:sanctum')->group(function () use (
             }
         }
 
-        if ($resolvedStatus === Exam::STATUS_PUBLISHED && !$questionBank) {
-            return response()->json([
-                'message' => 'A question bank is required before publishing an exam.',
-            ], 422);
-        }
-
         $exam = Exam::create([
             'title' => $validated['title'],
-            'subject' => $validated['subject'] ?? null,
+            'subject' => $questionBank?->subject,
             'description' => $validated['description'] ?? null,
             'question_bank_id' => $validated['question_bank_id'] ?? null,
             'total_items' => $validated['total_items'],
             'duration_minutes' => $validated['duration_minutes'],
             'scheduled_at' => $validated['scheduled_at'] ?? null,
+            'delivery_mode' => $deliveryMode,
             'one_take_only' => (bool) ($validated['one_take_only'] ?? false),
-            'shuffle_questions' => (bool) ($validated['shuffle_questions'] ?? false),
-            'status' => $validated['status'] ?? Exam::STATUS_DRAFT,
+            'shuffle_questions' => $deliveryMode === Exam::DELIVERY_MODE_TEACHER_PACED
+                ? false
+                : (bool) ($validated['shuffle_questions'] ?? false),
             'created_by' => $user->id,
         ]);
 
@@ -1030,8 +1150,8 @@ Route::middleware('auth:sanctum')->group(function () use (
             'Exam created',
             [
                 'title' => $exam->title,
-                'status' => $exam->status,
                 'scheduled_at' => $exam->scheduled_at,
+                'delivery_mode' => $normalizeDeliveryMode($exam->delivery_mode),
                 'question_bank_id' => $exam->question_bank_id,
                 'one_take_only' => (bool) $exam->one_take_only,
                 'shuffle_questions' => (bool) $exam->shuffle_questions,
@@ -1040,13 +1160,23 @@ Route::middleware('auth:sanctum')->group(function () use (
             $request,
         );
 
+        $exam->delivery_mode = $normalizeDeliveryMode($exam->delivery_mode);
+
         return response()->json([
             'message' => 'Exam created',
             'exam' => $exam,
         ], 201);
     });
 
-    Route::patch('/exams/{exam}', function (Request $request, Exam $exam) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit, $findAccessibleQuestionBank) {
+    Route::patch('/exams/{exam}', function (Request $request, Exam $exam) use (
+        $canManageRooms,
+        $ensureActive,
+        $isAdmin,
+        $recordAudit,
+        $findAccessibleQuestionBank,
+        $normalizeDeliveryMode,
+        $deliveryModeValidationModes
+    ) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
@@ -1063,18 +1193,21 @@ Route::middleware('auth:sanctum')->group(function () use (
 
         $validated = $request->validate([
             'title' => ['sometimes', 'required', 'string', 'max:255'],
-            'subject' => ['sometimes', 'nullable', 'string', 'max:255'],
             'description' => ['sometimes', 'nullable', 'string'],
             'question_bank_id' => ['sometimes', 'nullable', 'integer', 'exists:question_banks,id'],
             'total_items' => ['sometimes', 'required', 'integer', 'min:1', 'max:1000'],
             'duration_minutes' => ['sometimes', 'required', 'integer', 'min:1', 'max:600'],
             'scheduled_at' => ['sometimes', 'nullable', 'date'],
+            'delivery_mode' => ['sometimes', 'required', Rule::in($deliveryModeValidationModes)],
             'one_take_only' => ['sometimes', 'boolean'],
             'shuffle_questions' => ['sometimes', 'boolean'],
-            'status' => ['sometimes', 'required', Rule::in(Exam::STATUSES)],
             'room_ids' => ['sometimes', 'array'],
             'room_ids.*' => ['integer', 'exists:rooms,id'],
         ]);
+
+        if (array_key_exists('delivery_mode', $validated)) {
+            $validated['delivery_mode'] = $normalizeDeliveryMode((string) $validated['delivery_mode']);
+        }
 
         $resolvedQuestionBankId = array_key_exists('question_bank_id', $validated)
             ? $validated['question_bank_id']
@@ -1082,37 +1215,35 @@ Route::middleware('auth:sanctum')->group(function () use (
         $resolvedTotalItems = array_key_exists('total_items', $validated)
             ? (int) $validated['total_items']
             : (int) $exam->total_items;
-        $resolvedStatus = array_key_exists('status', $validated)
-            ? $validated['status']
-            : $exam->status;
+        $resolvedQuestionBank = null;
 
         if (!is_null($resolvedQuestionBankId)) {
-            $questionBank = $findAccessibleQuestionBank(
+            $resolvedQuestionBank = $findAccessibleQuestionBank(
                 $user,
                 (int) $resolvedQuestionBankId,
                 $isAdmin($user),
             );
 
-            if (!$questionBank) {
+            if (!$resolvedQuestionBank) {
                 return response()->json([
                     'message' => 'Selected question bank is not accessible.',
                 ], 422);
             }
 
-            if ($questionBank->questions_count < $resolvedTotalItems) {
+            if ($resolvedQuestionBank->questions_count < $resolvedTotalItems) {
                 return response()->json([
                     'message' => 'Selected question bank does not have enough questions for total items.',
                 ], 422);
             }
         }
 
-        if ($resolvedStatus === Exam::STATUS_PUBLISHED && is_null($resolvedQuestionBankId)) {
-            return response()->json([
-                'message' => 'A question bank is required before publishing an exam.',
-            ], 422);
+        $exam->fill($validated);
+        $exam->subject = $resolvedQuestionBank?->subject;
+
+        if ($normalizeDeliveryMode($exam->delivery_mode) === Exam::DELIVERY_MODE_TEACHER_PACED) {
+            $exam->shuffle_questions = false;
         }
 
-        $exam->fill($validated);
         $exam->save();
 
         if (array_key_exists('room_ids', $validated)) {
@@ -1151,8 +1282,8 @@ Route::middleware('auth:sanctum')->group(function () use (
             'Exam updated',
             [
                 'title' => $exam->title,
-                'status' => $exam->status,
                 'scheduled_at' => $exam->scheduled_at,
+                'delivery_mode' => $normalizeDeliveryMode($exam->delivery_mode),
                 'question_bank_id' => $exam->question_bank_id,
                 'one_take_only' => (bool) $exam->one_take_only,
                 'shuffle_questions' => (bool) $exam->shuffle_questions,
@@ -1160,6 +1291,8 @@ Route::middleware('auth:sanctum')->group(function () use (
             ],
             $request,
         );
+
+        $exam->delivery_mode = $normalizeDeliveryMode($exam->delivery_mode);
 
         return response()->json([
             'message' => 'Exam updated',
@@ -1201,6 +1334,429 @@ Route::middleware('auth:sanctum')->group(function () use (
         return response()->json(['message' => 'Exam deleted']);
     });
 
+    Route::get('/exams/{exam}/live-dashboard', function (Request $request, Exam $exam) use (
+        $canManageRooms,
+        $ensureActive,
+        $isAdmin,
+        $normalizeDeliveryMode,
+        $resolveTeacherPacedTotalItems,
+        $resolveTeacherPacingState,
+        $buildTeacherPacingPayload
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'room_id' => ['required', 'integer', 'exists:rooms,id'],
+        ]);
+
+        $deliveryMode = $normalizeDeliveryMode($exam->delivery_mode);
+
+        $room = Room::query()->find((int) $validated['room_id']);
+
+        if (!$room) {
+            return response()->json(['message' => 'Room not found.'], 404);
+        }
+
+        if (!$isAdmin($user) && (int) $room->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $isAssigned = $exam->rooms()
+            ->where('rooms.id', $room->id)
+            ->exists();
+
+        if (!$isAssigned) {
+            return response()->json([
+                'message' => 'This exam is not assigned to the selected room.',
+            ], 422);
+        }
+
+        $teacherPacing = null;
+
+        if ($deliveryMode === Exam::DELIVERY_MODE_TEACHER_PACED) {
+            $teacherPacing = $buildTeacherPacingPayload(
+                $resolveTeacherPacingState((int) $exam->id, (int) $room->id),
+                $resolveTeacherPacedTotalItems($exam),
+            );
+        }
+
+        $students = $room->members()
+            ->select('users.id', 'users.name', 'users.email', 'users.student_id')
+            ->where('users.role', User::ROLE_STUDENT)
+            ->orderBy('users.name')
+            ->get();
+
+        $attemptsByStudentId = ExamAttempt::query()
+            ->where('exam_id', $exam->id)
+            ->where('room_id', $room->id)
+            ->whereIn('user_id', $students->pluck('id'))
+            ->with([
+                'attemptQuestions:id,exam_attempt_id,question_bank_question_id,item_number',
+                'attemptQuestions.question:id,question_type',
+                'answers:id,exam_attempt_id,question_bank_question_id,question_bank_option_id,answer_text,is_correct,answered_at',
+                'answers.selectedOption:id,option_label,option_text',
+            ])
+            ->orderByDesc('started_at')
+            ->get()
+            ->groupBy('user_id')
+            ->map(fn ($group) => $group->first());
+
+        $maxItems = max(
+            (int) $exam->total_items,
+            (int) $attemptsByStudentId->max(fn (ExamAttempt $attempt) => (int) $attempt->total_items),
+        );
+
+        if ($maxItems < 1) {
+            $maxItems = 1;
+        }
+
+        $itemStats = [];
+        for ($itemNumber = 1; $itemNumber <= $maxItems; $itemNumber++) {
+            $itemStats[$itemNumber] = [
+                'started_count' => 0,
+                'answered_count' => 0,
+                'correct_count' => 0,
+            ];
+        }
+
+        $rows = $students->values()->map(function (User $student) use ($attemptsByStudentId, $maxItems, &$itemStats): array {
+            /** @var ExamAttempt|null $attempt */
+            $attempt = $attemptsByStudentId->get((int) $student->id);
+            $itemPayloadByNumber = [];
+
+            if ($attempt) {
+                $answersByQuestionId = $attempt->answers->keyBy('question_bank_question_id');
+
+                foreach ($attempt->attemptQuestions->sortBy('item_number')->values() as $attemptQuestion) {
+                    $questionId = (int) $attemptQuestion->question_bank_question_id;
+                    $itemNumber = (int) $attemptQuestion->item_number;
+                    $answer = $answersByQuestionId->get($questionId);
+                    $isAnswered = !is_null($answer);
+
+                    $responseText = null;
+                    if ($isAnswered) {
+                        if ($answer->selectedOption) {
+                            $optionLabel = trim((string) $answer->selectedOption->option_label);
+                            $optionText = trim((string) $answer->selectedOption->option_text);
+                            $responseText = filled($optionLabel)
+                                ? trim($optionLabel . '. ' . $optionText)
+                                : $optionText;
+                        } else {
+                            $responseText = trim((string) ($answer->answer_text ?? ''));
+                        }
+
+                        $responseText = $responseText === '' ? null : $responseText;
+                    }
+
+                    $itemPayloadByNumber[$itemNumber] = [
+                        'item_number' => $itemNumber,
+                        'question_id' => $questionId,
+                        'question_type' => $attemptQuestion->question?->question_type,
+                        'answered' => $isAnswered,
+                        'response' => $responseText,
+                        'is_correct' => $isAnswered
+                            ? (is_null($answer->is_correct) ? null : (bool) $answer->is_correct)
+                            : null,
+                        'answered_at' => $answer?->answered_at,
+                    ];
+                }
+
+                $attemptItemCap = max(
+                    (int) $attempt->total_items,
+                    empty($itemPayloadByNumber) ? 0 : (int) max(array_keys($itemPayloadByNumber)),
+                );
+
+                for ($itemNumber = 1; $itemNumber <= $maxItems; $itemNumber++) {
+                    if ($itemNumber > $attemptItemCap) {
+                        continue;
+                    }
+
+                    $itemStats[$itemNumber]['started_count']++;
+
+                    $itemData = $itemPayloadByNumber[$itemNumber] ?? null;
+                    if (!($itemData['answered'] ?? false)) {
+                        continue;
+                    }
+
+                    $itemStats[$itemNumber]['answered_count']++;
+
+                    if (($itemData['is_correct'] ?? null) === true) {
+                        $itemStats[$itemNumber]['correct_count']++;
+                    }
+                }
+            }
+
+            $items = [];
+            for ($itemNumber = 1; $itemNumber <= $maxItems; $itemNumber++) {
+                $items[] = $itemPayloadByNumber[$itemNumber] ?? [
+                    'item_number' => $itemNumber,
+                    'question_id' => null,
+                    'question_type' => null,
+                    'answered' => false,
+                    'response' => null,
+                    'is_correct' => null,
+                    'answered_at' => null,
+                ];
+            }
+
+            return [
+                'user' => [
+                    'id' => $student->id,
+                    'name' => $student->name,
+                    'email' => $student->email,
+                    'student_id' => $student->student_id,
+                ],
+                'attempt' => $attempt
+                    ? [
+                        'id' => $attempt->id,
+                        'status' => $attempt->status,
+                        'answered_count' => (int) $attempt->answered_count,
+                        'total_items' => (int) $attempt->total_items,
+                        'score_percent' => is_null($attempt->score_percent) ? null : (float) $attempt->score_percent,
+                        'started_at' => $attempt->started_at,
+                        'submitted_at' => $attempt->submitted_at,
+                    ]
+                    : null,
+                'items' => $items,
+            ];
+        })->all();
+
+        $attemptsStarted = collect($rows)
+            ->filter(fn (array $row) => !is_null($row['attempt'] ?? null))
+            ->count();
+
+        $attemptsSubmitted = collect($rows)
+            ->filter(fn (array $row) => ($row['attempt']['status'] ?? null) === ExamAttempt::STATUS_SUBMITTED)
+            ->count();
+
+        $itemSummary = [];
+        for ($itemNumber = 1; $itemNumber <= $maxItems; $itemNumber++) {
+            $startedCount = (int) $itemStats[$itemNumber]['started_count'];
+            $answeredCount = (int) $itemStats[$itemNumber]['answered_count'];
+            $correctCount = (int) $itemStats[$itemNumber]['correct_count'];
+
+            $itemSummary[] = [
+                'item_number' => $itemNumber,
+                'started_count' => $startedCount,
+                'answered_count' => $answeredCount,
+                'correct_count' => $correctCount,
+                'answered_percent' => $startedCount > 0
+                    ? (int) round(($answeredCount / $startedCount) * 100)
+                    : 0,
+                'correct_percent' => $answeredCount > 0
+                    ? (int) round(($correctCount / $answeredCount) * 100)
+                    : null,
+            ];
+        }
+
+        return response()->json([
+            'exam' => [
+                'id' => $exam->id,
+                'title' => $exam->title,
+                'subject' => $exam->subject,
+                'total_items' => (int) $exam->total_items,
+                'duration_minutes' => (int) $exam->duration_minutes,
+                'scheduled_at' => $exam->scheduled_at,
+                'delivery_mode' => $deliveryMode,
+                'shuffle_questions' => (bool) $exam->shuffle_questions,
+                'one_take_only' => (bool) $exam->one_take_only,
+            ],
+            'room' => [
+                'id' => $room->id,
+                'name' => $room->name,
+                'code' => $room->code,
+            ],
+            'summary' => [
+                'students_total' => $students->count(),
+                'attempts_started' => $attemptsStarted,
+                'attempts_submitted' => $attemptsSubmitted,
+            ],
+            'teacher_pacing' => $teacherPacing,
+            'rows' => $rows,
+            'item_summary' => $itemSummary,
+            'generated_at' => now(),
+        ]);
+    });
+
+    Route::post('/exams/{exam}/teacher-paced', function (Request $request, Exam $exam) use (
+        $canManageRooms,
+        $ensureActive,
+        $isAdmin,
+        $recordAudit,
+        $normalizeDeliveryMode,
+        $resolveTeacherPacedTotalItems,
+        $buildTeacherPacingPayload
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $deliveryMode = $normalizeDeliveryMode($exam->delivery_mode);
+
+        if ($deliveryMode !== Exam::DELIVERY_MODE_TEACHER_PACED) {
+            return response()->json([
+                'message' => 'Teacher pacing is only available for Teacher Paced exams.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'room_id' => ['required', 'integer', 'exists:rooms,id'],
+            'action' => ['required', Rule::in(['start', 'next', 'previous', 'stop'])],
+        ]);
+
+        $room = Room::query()->find((int) $validated['room_id']);
+
+        if (!$room) {
+            return response()->json(['message' => 'Room not found.'], 404);
+        }
+
+        if (!$isAdmin($user) && (int) $room->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $isAssigned = $exam->rooms()
+            ->where('rooms.id', $room->id)
+            ->exists();
+
+        if (!$isAssigned) {
+            return response()->json([
+                'message' => 'This exam is not assigned to the selected room.',
+            ], 422);
+        }
+
+        $action = (string) $validated['action'];
+        $totalItems = $resolveTeacherPacedTotalItems($exam);
+
+        $stateRow = DB::transaction(function () use ($exam, $room, $user, $action, $totalItems) {
+            $query = DB::table('exam_room_pacing_states')
+                ->where('exam_id', (int) $exam->id)
+                ->where('room_id', (int) $room->id)
+                ->lockForUpdate();
+
+            $row = $query->first();
+            $now = now();
+
+            if (!$row) {
+                DB::table('exam_room_pacing_states')->insert([
+                    'exam_id' => (int) $exam->id,
+                    'room_id' => (int) $room->id,
+                    'is_active' => false,
+                    'current_item_number' => null,
+                    'started_at' => null,
+                    'updated_by' => (int) $user->id,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+
+                $row = $query->first();
+            }
+
+            $isActive = (bool) ($row->is_active ?? false);
+            $currentItemNumber = is_null($row->current_item_number)
+                ? 1
+                : (int) $row->current_item_number;
+            $startedAt = $row->started_at;
+
+            if ($action === 'next' && !$isActive) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'action' => 'Start teacher pacing before moving to the next question.',
+                ]);
+            }
+
+            if ($action === 'previous' && !$isActive) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'action' => 'Start teacher pacing before moving to the previous question.',
+                ]);
+            }
+
+            switch ($action) {
+                case 'start':
+                    $isActive = true;
+                    $currentItemNumber = 1;
+                    $startedAt = $now;
+                    break;
+                case 'next':
+                    $currentItemNumber = min($totalItems, max(1, $currentItemNumber + 1));
+                    break;
+                case 'previous':
+                    $currentItemNumber = max(1, $currentItemNumber - 1);
+                    break;
+                case 'stop':
+                    $isActive = false;
+                    $currentItemNumber = null;
+                    $startedAt = null;
+                    break;
+            }
+
+            DB::table('exam_room_pacing_states')
+                ->where('id', (int) $row->id)
+                ->update([
+                    'is_active' => $isActive,
+                    'current_item_number' => $isActive ? $currentItemNumber : null,
+                    'started_at' => $startedAt,
+                    'updated_by' => (int) $user->id,
+                    'updated_at' => $now,
+                ]);
+
+            return DB::table('exam_room_pacing_states')
+                ->where('id', (int) $row->id)
+                ->first();
+        });
+
+        $teacherPacing = $buildTeacherPacingPayload([
+            'is_active' => (bool) ($stateRow->is_active ?? false),
+            'current_item_number' => is_null($stateRow->current_item_number) ? null : (int) $stateRow->current_item_number,
+            'started_at' => $stateRow->started_at ?? null,
+            'updated_at' => $stateRow->updated_at ?? null,
+        ], $totalItems);
+
+        $recordAudit(
+            $user,
+            'exam.teacher_paced.update',
+            'exam',
+            $exam->id,
+            'Teacher paced control updated',
+            [
+                'room_id' => (int) $room->id,
+                'action' => $action,
+                'teacher_pacing' => $teacherPacing,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => match ($action) {
+                'start' => 'Teacher pacing started.',
+                'next' => 'Moved to the next question.',
+                'previous' => 'Moved to the previous question.',
+                default => 'Teacher pacing stopped.',
+            },
+            'teacher_pacing' => $teacherPacing,
+        ]);
+    });
+
     Route::post('/student/exams/{exam}/start', function (
         Request $request,
         Exam $exam
@@ -1208,6 +1764,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $canManageRooms,
         $ensureActive,
         $recordAudit,
+        $normalizeDeliveryMode,
         $autoSubmitExpiredAttempt,
         $buildAttemptPayload
     ) {
@@ -1249,12 +1806,6 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
-        if ($exam->status !== Exam::STATUS_PUBLISHED) {
-            return response()->json([
-                'message' => 'This exam is not currently available.',
-            ], 422);
-        }
-
         if ($exam->scheduled_at && now()->lt($exam->scheduled_at)) {
             return response()->json([
                 'message' => 'This exam is not yet available based on schedule.',
@@ -1275,6 +1826,8 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'message' => 'Source question bank was not found.',
             ], 422);
         }
+
+        $deliveryMode = $normalizeDeliveryMode($exam->delivery_mode);
 
         $availableQuestionCount = $questionBank->questions()->count();
         $targetItems = min((int) $exam->total_items, $availableQuestionCount);
@@ -1323,7 +1876,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $questionQuery = DB::table('question_bank_questions')
             ->where('question_bank_id', $questionBankId);
 
-        if ((bool) $exam->shuffle_questions) {
+        if ((bool) $exam->shuffle_questions && $deliveryMode !== Exam::DELIVERY_MODE_TEACHER_PACED) {
             $questionQuery->inRandomOrder();
         } else {
             $questionQuery
@@ -1443,6 +1996,8 @@ Route::middleware('auth:sanctum')->group(function () use (
         $canManageRooms,
         $ensureActive,
         $normalizeAnswerText,
+        $normalizeDeliveryMode,
+        $resolveTeacherPacingState,
         $refreshAttemptMetrics,
         $autoSubmitExpiredAttempt,
         $buildAttemptPayload
@@ -1470,6 +2025,9 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
+        $attempt->loadMissing('exam:id,delivery_mode');
+        $deliveryMode = $normalizeDeliveryMode($attempt->exam?->delivery_mode);
+
         $validated = $request->validate([
             'question_id' => ['required', 'integer', 'exists:question_bank_questions,id'],
             'selected_option_id' => ['nullable', 'integer', 'exists:question_bank_options,id'],
@@ -1477,6 +2035,35 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
 
         $questionId = (int) $validated['question_id'];
+
+        if ($deliveryMode === Exam::DELIVERY_MODE_INSTANT_FEEDBACK) {
+            $nextRequired = DB::table('exam_attempt_questions as attempt_questions')
+                ->leftJoin('exam_attempt_answers as answers', function ($join) use ($attempt) {
+                    $join
+                        ->on('answers.question_bank_question_id', '=', 'attempt_questions.question_bank_question_id')
+                        ->where('answers.exam_attempt_id', '=', (int) $attempt->id);
+                })
+                ->where('attempt_questions.exam_attempt_id', (int) $attempt->id)
+                ->whereNull('answers.id')
+                ->orderBy('attempt_questions.item_number')
+                ->select('attempt_questions.question_bank_question_id', 'attempt_questions.item_number')
+                ->first();
+
+            if (!$nextRequired) {
+                return response()->json([
+                    'message' => 'All questions are already answered. Submit your attempt to finish.',
+                    ...$buildAttemptPayload($attempt),
+                ], 422);
+            }
+
+            if ((int) $nextRequired->question_bank_question_id !== $questionId) {
+                return response()->json([
+                    'message' => 'Answer questions in order for Instant Feedback mode.',
+                    'next_required_item_number' => (int) $nextRequired->item_number,
+                    ...$buildAttemptPayload($attempt),
+                ], 422);
+            }
+        }
 
         $attemptQuestion = $attempt->attemptQuestions()
             ->where('question_bank_question_id', $questionId)
@@ -1496,6 +2083,26 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json([
                 'message' => 'Question not found.',
             ], 422);
+        }
+
+        if ($deliveryMode === Exam::DELIVERY_MODE_TEACHER_PACED) {
+            $teacherPacing = $resolveTeacherPacingState((int) $attempt->exam_id, (int) $attempt->room_id);
+
+            if (!($teacherPacing['is_active'] ?? false)) {
+                return response()->json([
+                    'message' => 'Wait for your teacher to start paced mode.',
+                    ...$buildAttemptPayload($attempt),
+                ], 422);
+            }
+
+            $currentItemNumber = (int) ($teacherPacing['current_item_number'] ?? 0);
+
+            if ($currentItemNumber < 1 || (int) $attemptQuestion->item_number !== $currentItemNumber) {
+                return response()->json([
+                    'message' => 'You can only answer the question currently opened by your teacher.',
+                    ...$buildAttemptPayload($attempt),
+                ], 422);
+            }
         }
 
         $selectedOptionId = is_null($validated['selected_option_id'] ?? null)
@@ -1585,6 +2192,7 @@ Route::middleware('auth:sanctum')->group(function () use (
     ) use (
         $canManageRooms,
         $ensureActive,
+        $normalizeDeliveryMode,
         $autoSubmitExpiredAttempt,
         $buildAttemptPayload
     ) {
@@ -1607,6 +2215,16 @@ Route::middleware('auth:sanctum')->group(function () use (
         if ($attempt->status !== ExamAttempt::STATUS_IN_PROGRESS) {
             return response()->json([
                 'message' => 'This attempt is already submitted.',
+                ...$buildAttemptPayload($attempt),
+            ], 422);
+        }
+
+        $attempt->loadMissing('exam:id,delivery_mode');
+        $deliveryMode = $normalizeDeliveryMode($attempt->exam?->delivery_mode);
+
+        if ($deliveryMode !== Exam::DELIVERY_MODE_OPEN_NAVIGATION) {
+            return response()->json([
+                'message' => 'Bookmarking is only available in Open Navigation mode.',
                 ...$buildAttemptPayload($attempt),
             ], 422);
         }
@@ -1641,6 +2259,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $canManageRooms,
         $ensureActive,
         $recordAudit,
+        $normalizeDeliveryMode,
         $refreshAttemptMetrics,
         $autoSubmitExpiredAttempt,
         $buildAttemptPayload
@@ -1666,6 +2285,19 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'message' => 'Attempt already submitted.',
                 ...$buildAttemptPayload($attempt),
             ]);
+        }
+
+        $attempt->loadMissing('exam:id,delivery_mode');
+        $deliveryMode = $normalizeDeliveryMode($attempt->exam?->delivery_mode);
+
+        if (
+            $deliveryMode === Exam::DELIVERY_MODE_INSTANT_FEEDBACK
+            && (int) $attempt->answered_count < (int) $attempt->total_items
+        ) {
+            return response()->json([
+                'message' => 'Instant Feedback mode requires all questions to be answered before submitting.',
+                ...$buildAttemptPayload($attempt),
+            ], 422);
         }
 
         $attempt = $refreshAttemptMetrics($attempt, true);
@@ -1865,14 +2497,15 @@ Route::middleware('auth:sanctum')->group(function () use (
             ]);
 
             $users = User::query()
-                ->select('id', 'name', 'email', 'role', 'is_active', 'created_at', 'updated_at')
+                ->select('id', 'name', 'email', 'student_id', 'role', 'is_active', 'created_at', 'updated_at')
                 ->when(
                     filled($validated['search'] ?? null),
                     fn ($query) => $query->where(function ($inner) use ($validated) {
                         $search = trim((string) $validated['search']);
 
                         $inner->where('name', 'like', "%{$search}%")
-                            ->orWhere('email', 'like', "%{$search}%");
+                            ->orWhere('email', 'like', "%{$search}%")
+                            ->orWhere('student_id', 'like', "%{$search}%");
                     })
                 )
                 ->when(
@@ -1904,14 +2537,27 @@ Route::middleware('auth:sanctum')->group(function () use (
             $validated = $request->validate([
                 'name' => ['required', 'string', 'max:255'],
                 'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+                'student_id' => [
+                    Rule::requiredIf(fn () => $request->input('role') === User::ROLE_STUDENT),
+                    'nullable',
+                    'string',
+                    'max:32',
+                    'regex:/^\d{7,20}$/',
+                    'unique:users,student_id',
+                ],
                 'role' => ['required', Rule::in(User::ROLES)],
                 'password' => ['required', 'string', 'min:8'],
                 'is_active' => ['nullable', 'boolean'],
             ]);
 
+            $normalizedStudentId = filled($validated['student_id'] ?? null)
+                ? trim((string) $validated['student_id'])
+                : null;
+
             $user = User::create([
                 'name' => $validated['name'],
                 'email' => $validated['email'],
+                'student_id' => $validated['role'] === User::ROLE_STUDENT ? $normalizedStudentId : null,
                 'role' => $validated['role'],
                 'is_active' => $validated['is_active'] ?? true,
                 'password' => $validated['password'],
@@ -1923,7 +2569,12 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'user',
                 $user->id,
                 'Admin created user account',
-                ['email' => $user->email, 'role' => $user->role, 'is_active' => $user->is_active],
+                [
+                    'email' => $user->email,
+                    'student_id' => $user->student_id,
+                    'role' => $user->role,
+                    'is_active' => $user->is_active,
+                ],
                 $request,
             );
 
@@ -1946,10 +2597,34 @@ Route::middleware('auth:sanctum')->group(function () use (
             $validated = $request->validate([
                 'name' => ['sometimes', 'required', 'string', 'max:255'],
                 'email' => ['sometimes', 'required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+                'student_id' => ['sometimes', 'nullable', 'string', 'max:32', 'regex:/^\d{7,20}$/', Rule::unique('users', 'student_id')->ignore($user->id)],
                 'role' => ['sometimes', 'required', Rule::in(User::ROLES)],
                 'is_active' => ['sometimes', 'required', 'boolean'],
                 'password' => ['sometimes', 'required', 'string', 'min:8'],
             ]);
+
+            if (array_key_exists('student_id', $validated)) {
+                $validated['student_id'] = filled($validated['student_id'])
+                    ? trim((string) $validated['student_id'])
+                    : null;
+            }
+
+            $resolvedRole = array_key_exists('role', $validated)
+                ? $validated['role']
+                : $user->role;
+            $resolvedStudentId = array_key_exists('student_id', $validated)
+                ? $validated['student_id']
+                : $user->student_id;
+
+            if ($resolvedRole === User::ROLE_STUDENT && blank($resolvedStudentId)) {
+                return response()->json([
+                    'message' => 'Student ID is required for student accounts.',
+                ], 422);
+            }
+
+            if ($resolvedRole !== User::ROLE_STUDENT) {
+                $validated['student_id'] = null;
+            }
 
             if ((int) $actor->id === (int) $user->id) {
                 if (($validated['is_active'] ?? true) === false) {
@@ -1985,6 +2660,7 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'Admin updated user account',
                 [
                     'role' => $user->role,
+                    'student_id' => $user->student_id,
                     'is_active' => $user->is_active,
                     'updated_fields' => array_keys($validated),
                 ],

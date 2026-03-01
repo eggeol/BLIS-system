@@ -27,9 +27,9 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = data.user
   }
 
-  async function register(name, email, password, password_confirmation) {
+  async function register(name, student_id, email, password, password_confirmation) {
     const { data } = await api.post('/auth/register', {
-      name, email, password, password_confirmation,
+      name, student_id, email, password, password_confirmation,
     })
     _persist(data.token)
     user.value = data.user
