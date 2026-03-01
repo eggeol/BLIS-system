@@ -10,6 +10,8 @@ RUN set -eux; \
         zip \
         libzip-dev \
         libpng-dev \
+        libjpeg62-turbo-dev \
+        libfreetype6-dev \
         libonig-dev \
         libicu-dev \
         curl \
@@ -20,12 +22,14 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends nodejs \
     ; \
     # 2) Install PHP extensions using the official helper scripts (from the PHP image docs)
+    docker-php-ext-configure gd --with-freetype --with-jpeg; \
     docker-php-ext-install -j"$(nproc)" \
         pdo_mysql \
         mbstring \
         zip \
         intl \
         bcmath \
+        gd \
         opcache \
     ; \
     # 3) Clean apt cache to reduce image size

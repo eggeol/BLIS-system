@@ -97,7 +97,7 @@ function handleSubmit() {
 
 .forgot-card p {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   color: var(--lnu-text-muted);
 }
 
@@ -113,7 +113,7 @@ function handleSubmit() {
 }
 
 .field-group span {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--lnu-text);
 }
@@ -169,12 +169,12 @@ function handleSubmit() {
   border: 1px solid rgba(46, 125, 50, 0.24);
   background: rgba(46, 125, 50, 0.1);
   color: var(--lnu-success);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .back-link {
   margin-top: 16px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--lnu-navy-light);
   text-decoration: none;
   display: inline-flex;

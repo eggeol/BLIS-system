@@ -54,7 +54,7 @@ services:
 
 volumes:  
   mysql_data:
-    name: capstone_i_mysql_data
+    name: blis_system_mysql_data
 
 networks:
   appnet:

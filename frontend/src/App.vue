@@ -4,11 +4,13 @@
 
 <script setup>
 import { onMounted } from 'vue'
-import { useAuthStore } from './stores/auth'
+import { useAuthStore } from './store/auth.store'
 
 const auth = useAuthStore()
 
 onMounted(() => {
-  auth.fetchMe()
+  if (!auth.initialized) {
+    auth.fetchMe({ silent: true })
+  }
 })
 </script>

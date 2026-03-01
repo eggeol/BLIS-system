@@ -6,9 +6,9 @@
           <GraduationCap :size="30" />
         </div>
         <p class="brand-label">LNU LLE Platform</p>
-        <h1>LLE Examination and Readiness System</h1>
+        <h1>Create your reviewer account</h1>
         <p class="brand-copy">
-          Access your reviewer workspace, take mock exams, and monitor your progress from one clean dashboard.
+          Register once and access your exam rooms, analytics, and mock examination modules.
         </p>
 
         <div class="brand-list">
@@ -23,14 +23,44 @@
     <main class="auth-main">
       <section class="auth-card">
         <header class="auth-header">
-          <p class="eyebrow">Welcome back</p>
-          <h2>Sign in to continue</h2>
-          <p class="subtitle">Use your registered account to open your LLE workspace.</p>
+          <p class="eyebrow">Registration</p>
+          <h2>Create Account</h2>
+          <p class="subtitle">Complete your details to start using the platform.</p>
         </header>
 
         <div v-if="apiError" class="alert alert-danger">{{ apiError }}</div>
 
         <form class="auth-form" @submit.prevent="handleSubmit">
+          <label class="field-group">
+            <span class="field-label">Full name</span>
+            <div class="field-wrap">
+              <UserRound :size="17" class="field-icon" />
+              <input
+                v-model="form.name"
+                type="text"
+                class="field-input"
+                placeholder="e.g. Juan dela Cruz"
+                autocomplete="name"
+              />
+            </div>
+          </label>
+
+          <label class="field-group">
+            <span class="field-label">Student ID</span>
+            <div class="field-wrap">
+              <Hash :size="17" class="field-icon" />
+              <input
+                v-model="form.student_id"
+                type="text"
+                class="field-input"
+                placeholder="e.g. 2301290"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                autocomplete="off"
+              />
+            </div>
+          </label>
+
           <label class="field-group">
             <span class="field-label">Email address</span>
             <div class="field-wrap">
@@ -45,41 +75,68 @@
             </div>
           </label>
 
-          <label class="field-group">
-            <span class="field-label">Password</span>
-            <div class="field-wrap">
-              <LockKeyhole :size="17" class="field-icon" />
-              <input
-                v-model="form.password"
-                :type="showPw ? 'text' : 'password'"
-                class="field-input field-input-with-toggle"
-                placeholder="Enter your password"
-                autocomplete="current-password"
-              />
-              <button type="button" class="field-toggle" @click="showPw = !showPw">
-                <EyeOff v-if="showPw" :size="16" />
-                <Eye v-else :size="16" />
-              </button>
-            </div>
-          </label>
-
-          <div class="form-row">
-            <label class="remember-wrap">
-              <input type="checkbox" v-model="form.remember" />
-              <span>Remember me</span>
+          <div class="field-grid">
+            <label class="field-group">
+              <span class="field-label">Password</span>
+              <div class="field-wrap">
+                <LockKeyhole :size="17" class="field-icon" />
+                <input
+                  v-model="form.password"
+                  :type="showPw ? 'text' : 'password'"
+                  class="field-input field-input-with-toggle"
+                  placeholder="Min. 8 characters"
+                  autocomplete="new-password"
+                />
+                <button type="button" class="field-toggle" @click="showPw = !showPw">
+                  <EyeOff v-if="showPw" :size="16" />
+                  <Eye v-else :size="16" />
+                </button>
+              </div>
             </label>
-            <router-link to="/forgot-password" class="inline-link">Forgot password?</router-link>
+
+            <label class="field-group">
+              <span class="field-label">Confirm password</span>
+              <div class="field-wrap">
+                <LockKeyhole :size="17" class="field-icon" />
+                <input
+                  v-model="form.password_confirmation"
+                  :type="showPw ? 'text' : 'password'"
+                  class="field-input"
+                  :class="{ 'field-input-error': pwMismatch }"
+                  placeholder="Re-enter password"
+                  autocomplete="new-password"
+                />
+              </div>
+              <span v-if="pwMismatch" class="field-error">Passwords do not match.</span>
+            </label>
           </div>
 
+          <div class="pw-strength" v-if="form.password">
+            <div class="pw-track">
+              <div class="pw-fill" :style="{ width: `${pwStrength.pct}%`, background: pwStrength.color }" />
+            </div>
+            <span class="pw-label" :style="{ color: pwStrength.color }">{{ pwStrength.label }}</span>
+          </div>
+
+          <label class="terms-wrap">
+            <input type="checkbox" v-model="form.agreed" />
+            <span>
+              I agree to the
+              <a href="#" class="inline-link">Terms of Use</a>
+              and
+              <a href="#" class="inline-link">Privacy Policy</a>
+            </span>
+          </label>
+
           <button type="submit" class="submit-btn" :disabled="isLoading">
-            <span v-if="!isLoading">Sign In</span>
+            <span v-if="!isLoading">Create Account</span>
             <span v-else class="spinner" />
           </button>
         </form>
 
         <p class="auth-footer">
-          No account yet?
-          <router-link to="/register" class="inline-link strong">Create one</router-link>
+          Already registered?
+          <router-link to="/login" class="inline-link strong">Sign in</router-link>
         </p>
       </section>
     </main>
@@ -87,21 +144,31 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import { useAuthStore } from '@/store/auth.store'
 import {
   BarChart3,
   ClipboardCheck,
   Eye,
   EyeOff,
   GraduationCap,
+  Hash,
   LockKeyhole,
   Mail,
   ShieldCheck,
+  UserRound,
 } from 'lucide-vue-next'
 
-const form = reactive({ email: '', password: '', remember: false })
+const form = reactive({
+  name: '',
+  student_id: '',
+  email: '',
+  password: '',
+  password_confirmation: '',
+  agreed: false,
+})
+
 const showPw = ref(false)
 const isLoading = ref(false)
 const apiError = ref('')
@@ -110,25 +177,58 @@ const auth = useAuthStore()
 const router = useRouter()
 
 const highlights = [
-  { icon: ClipboardCheck, text: 'Practice tests and exam drills' },
-  { icon: BarChart3, text: 'Performance analytics by subject' },
-  { icon: ShieldCheck, text: 'Secure role-based access control' },
+  { icon: ClipboardCheck, text: 'Room-based class exam management' },
+  { icon: BarChart3, text: 'Clear analytics and score tracking' },
+  { icon: ShieldCheck, text: 'Role-based access for each account' },
 ]
+
+const pwMismatch = computed(() =>
+  form.password_confirmation.length > 0 && form.password !== form.password_confirmation,
+)
+
+const pwStrength = computed(() => {
+  const pw = form.password
+  if (pw.length < 6) return { pct: 20, color: 'var(--lnu-danger)', label: 'Weak' }
+  if (pw.length < 10) return { pct: 55, color: 'var(--lnu-gold)', label: 'Fair' }
+  if (/[A-Z]/.test(pw) && /[0-9]/.test(pw)) return { pct: 100, color: 'var(--lnu-success)', label: 'Strong' }
+  return { pct: 75, color: 'var(--lnu-gold)', label: 'Good' }
+})
 
 async function handleSubmit() {
   apiError.value = ''
 
-  if (!form.email || !form.password) {
-    apiError.value = 'Email and password are required.'
+  if (!form.name || !form.student_id || !form.email || !form.password || !form.password_confirmation) {
+    apiError.value = 'Please complete all required fields.'
+    return
+  }
+
+  if (!/^\d{7,20}$/.test(form.student_id.trim())) {
+    apiError.value = 'Student ID must be 7 to 20 digits.'
+    return
+  }
+
+  if (pwMismatch.value) {
+    apiError.value = 'Passwords do not match.'
+    return
+  }
+
+  if (!form.agreed) {
+    apiError.value = 'Please agree to the Terms of Use.'
     return
   }
 
   isLoading.value = true
   try {
-    await auth.login(form.email, form.password)
+    await auth.register(
+      form.name,
+      form.student_id.trim(),
+      form.email,
+      form.password,
+      form.password_confirmation,
+    )
     await router.push('/dashboard')
   } catch (error) {
-    apiError.value = error.response?.data?.message ?? 'Invalid email or password. Please try again.'
+    apiError.value = error.response?.data?.message ?? 'Registration failed. Please try again.'
   } finally {
     isLoading.value = false
   }
@@ -141,8 +241,8 @@ async function handleSubmit() {
   display: grid;
   grid-template-columns: minmax(320px, 460px) 1fr;
   background:
-    radial-gradient(circle at 12% 8%, rgba(26, 35, 126, 0.12), transparent 30%),
-    radial-gradient(circle at 88% 92%, rgba(201, 168, 76, 0.25), transparent 34%),
+    radial-gradient(circle at 10% 12%, rgba(26, 35, 126, 0.12), transparent 32%),
+    radial-gradient(circle at 90% 90%, rgba(201, 168, 76, 0.24), transparent 35%),
     var(--lnu-bg);
 }
 
@@ -178,7 +278,7 @@ async function handleSubmit() {
 
 .brand-label {
   margin-top: 22px;
-  font-size: 12px;
+  font-size: 14px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(240, 208, 128, 0.88);
@@ -194,7 +294,7 @@ async function handleSubmit() {
 .brand-copy {
   margin-top: 14px;
   color: rgba(255, 255, 255, 0.82);
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .brand-list {
@@ -211,7 +311,7 @@ async function handleSubmit() {
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: var(--radius-md);
   padding: 11px 12px;
-  font-size: 13px;
+  font-size: 14px;
   color: rgba(255, 255, 255, 0.88);
 }
 
@@ -232,7 +332,7 @@ async function handleSubmit() {
 
 .auth-card {
   width: 100%;
-  max-width: 460px;
+  max-width: 540px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(253, 246, 227, 0.94));
   border: 1px solid rgba(26, 35, 126, 0.16);
   border-radius: var(--radius-lg);
@@ -248,7 +348,7 @@ async function handleSubmit() {
 }
 
 .eyebrow {
-  font-size: 12px;
+  font-size: 14px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--lnu-navy-light);
@@ -256,7 +356,7 @@ async function handleSubmit() {
 }
 
 .subtitle {
-  font-size: 14px;
+  font-size: 15px;
   color: var(--lnu-text-muted);
 }
 
@@ -264,7 +364,7 @@ async function handleSubmit() {
   margin-top: 16px;
   border-radius: var(--radius-sm);
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .alert-danger {
@@ -279,13 +379,19 @@ async function handleSubmit() {
   gap: 16px;
 }
 
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .field-group {
   display: grid;
   gap: 8px;
 }
 
 .field-label {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--lnu-text);
 }
@@ -324,6 +430,20 @@ async function handleSubmit() {
   color: var(--lnu-gray-dark);
 }
 
+.field-select {
+  appearance: none;
+  padding-right: 38px;
+}
+
+.field-select-icon {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  color: var(--lnu-text-muted);
+  pointer-events: none;
+}
+
 .field-input-with-toggle {
   padding-right: 44px;
 }
@@ -350,23 +470,50 @@ async function handleSubmit() {
   color: var(--lnu-text);
 }
 
-.form-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 2px;
-  font-size: 13px;
+.field-input-error {
+  border-color: var(--lnu-danger);
 }
 
-.remember-wrap {
-  display: inline-flex;
+.field-error {
+  font-size: 14px;
+  color: var(--lnu-danger);
+}
+
+.pw-strength {
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+
+.pw-track {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--lnu-gray);
+  overflow: hidden;
+}
+
+.pw-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+.pw-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.terms-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 14px;
   color: var(--lnu-text-muted);
 }
 
-.remember-wrap input {
+.terms-wrap input {
+  margin-top: 2px;
   accent-color: var(--lnu-navy);
 }
 
@@ -421,7 +568,7 @@ async function handleSubmit() {
   margin-top: 18px;
   color: var(--lnu-text-muted);
   text-align: center;
-  font-size: 14px;
+  font-size: 15px;
 }
 
 @keyframes spin {
@@ -446,6 +593,9 @@ async function handleSubmit() {
   .auth-card {
     padding: 24px;
   }
+
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
-
