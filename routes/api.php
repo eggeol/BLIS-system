@@ -1,5 +1,6 @@
 <?php
 
+use App\Mail\StudentReportMail;
 use App\Models\AuditLog;
 use App\Models\Exam;
 use App\Models\ExamAttempt;
@@ -14,19 +15,26 @@ use App\Services\AuthTokenCookieService;
 use App\Services\ExamAttemptService;
 use App\Services\ExamDeliveryModeService;
 use App\Services\Library\DocxQuestionParser;
+use App\Services\ReportExportService;
 use App\Services\RoleService;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 
 $roleService = app(RoleService::class);
 $auditLogService = app(AuditLogService::class);
 $authTokenCookieService = app(AuthTokenCookieService::class);
 $deliveryModeService = app(ExamDeliveryModeService::class);
 $examAttemptService = app(ExamAttemptService::class);
+$reportExportService = app(ReportExportService::class);
 
 $canManageRooms = static function (User $user) use ($roleService): bool {
     return $roleService->canManageRooms($user);
@@ -34,6 +42,10 @@ $canManageRooms = static function (User $user) use ($roleService): bool {
 
 $isAdmin = static function (User $user) use ($roleService): bool {
     return $roleService->isAdmin($user);
+};
+
+$isStaffMasterExaminer = static function (User $user) use ($roleService): bool {
+    return $roleService->isStaffMasterExaminer($user);
 };
 
 $recordAudit = static function (
@@ -62,12 +74,84 @@ $ensureActive = static function (Request $request) use ($authTokenCookieService)
     return null;
 };
 
+$ensureTeacherReportAccess = static function (
+    Request $request,
+    Exam $exam,
+    Room $room
+) use ($ensureActive, $isStaffMasterExaminer): User|JsonResponse {
+    if ($inactiveResponse = $ensureActive($request)) {
+        return $inactiveResponse;
+    }
+
+    $user = $request->user();
+
+    if (!$isStaffMasterExaminer($user)) {
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
+    if ((int) $exam->created_by !== (int) $user->id) {
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
+    if ((int) $room->created_by !== (int) $user->id) {
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
+    $isAssigned = $exam->rooms()
+        ->where('rooms.id', $room->id)
+        ->exists();
+
+    if (!$isAssigned) {
+        return response()->json([
+            'message' => 'This exam is not assigned to the selected room.',
+        ], 422);
+    }
+
+    return $user;
+};
+
+$defaultTermsOfUseText = <<<'TEXT'
+1. Acceptable Use
+Use the platform only for official academic review and examination activities. Sharing accounts, impersonating users, or attempting to bypass exam controls is prohibited.
+
+2. Account Responsibility
+You are responsible for keeping your credentials secure. Actions performed using your account are treated as your own unless officially reported as compromised.
+
+3. Academic Integrity
+Cheating, unauthorized collaboration, copying exam content, or distributing question material may result in account suspension and disciplinary action.
+
+4. Availability and Changes
+System features may be updated or temporarily unavailable for maintenance. Administrators may enforce policy updates to keep the platform compliant and secure.
+
+5. Enforcement
+Violations can lead to investigation, removal of access, and formal reporting to relevant academic authorities.
+TEXT;
+
+$defaultPrivacyPolicyText = <<<'TEXT'
+1. Data We Collect
+The platform stores identity details (name, student ID, email), role information, room enrollments, and exam performance records required for academic operations.
+
+2. How Data Is Used
+Collected data is used to authenticate users, manage rooms and exams, generate reports, and maintain audit logs for security and accountability.
+
+3. Data Access
+Access to personal and exam-related data is role-based. Authorized staff and administrators can access only the data needed for their responsibilities.
+
+4. Data Retention
+Records are retained based on institutional requirements for academic continuity, reporting, and account recovery workflows.
+
+5. Security and Contact
+Reasonable safeguards are applied to protect stored data. Report privacy concerns or account issues to the institution administrators for assistance.
+TEXT;
+
 $systemSettingDefaults = [
     'platform_name' => 'LNU LLE Platform',
     'academic_term' => 'AY 2025-2026',
     'allow_public_registration' => true,
     'maintenance_mode' => false,
     'announcement_banner' => '',
+    'terms_of_use_text' => $defaultTermsOfUseText,
+    'privacy_policy_text' => $defaultPrivacyPolicyText,
 ];
 
 $systemSettingBooleanKeys = [
@@ -135,14 +219,27 @@ Route::post('/auth/register', function (Request $request) use ($recordAudit, $au
     }
 
     $validated = $request->validate([
-        'name' => ['required', 'string', 'max:255'],
+        'first_name' => ['required', 'string', 'max:255'],
+        'middle_name' => ['nullable', 'string', 'max:255'],
+        'last_name' => ['required', 'string', 'max:255'],
         'student_id' => ['required', 'string', 'max:32', 'regex:/^\d{7,20}$/', 'unique:users,student_id'],
         'email' => ['required', 'email', 'max:255', 'unique:users,email'],
         'password' => ['required', 'min:8', 'confirmed'],
+        'agreed' => ['required', 'accepted'],
     ]);
 
+    $firstName = Str::squish((string) $validated['first_name']);
+    $middleName = array_key_exists('middle_name', $validated)
+        ? Str::squish((string) $validated['middle_name'])
+        : '';
+    $lastName = Str::squish((string) $validated['last_name']);
+    $fullName = trim(implode(' ', array_filter([$firstName, $middleName, $lastName])));
+
     $user = User::create([
-        'name' => $validated['name'],
+        'name' => $fullName,
+        'first_name' => $firstName,
+        'middle_name' => $middleName !== '' ? $middleName : null,
+        'last_name' => $lastName,
         'student_id' => trim((string) $validated['student_id']),
         'email' => $validated['email'],
         'role' => User::ROLE_STUDENT,
@@ -194,10 +291,38 @@ Route::post('/auth/login', function (Request $request) use ($authTokenCookieServ
     return $authTokenCookieService->attachTokenCookie($response, $token);
 });
 
+Route::get('/settings/public/legal', function () use ($systemSettingDefaults) {
+    $legalKeys = ['terms_of_use_text', 'privacy_policy_text'];
+
+    $stored = SystemSetting::query()
+        ->whereIn('key', $legalKeys)
+        ->pluck('value', 'key')
+        ->all();
+
+    $settings = [];
+
+    foreach ($legalKeys as $key) {
+        $storedValue = $stored[$key] ?? null;
+        $settings[$key] = is_string($storedValue) && trim($storedValue) !== ''
+            ? $storedValue
+            : (string) $systemSettingDefaults[$key];
+    }
+
+    $lastUpdatedAt = SystemSetting::query()
+        ->whereIn('key', $legalKeys)
+        ->max('updated_at');
+
+    return response()->json([
+        'settings' => $settings,
+        'last_updated_at' => $lastUpdatedAt,
+    ]);
+});
+
 Route::middleware('auth:sanctum')->group(function () use (
     $canManageRooms,
     $ensureActive,
     $isAdmin,
+    $isStaffMasterExaminer,
     $recordAudit,
     $findAccessibleQuestionBank,
     $normalizeAnswerText,
@@ -212,6 +337,8 @@ Route::middleware('auth:sanctum')->group(function () use (
     $systemSettingBooleanKeys,
     $systemSettingDefaults,
     $authTokenCookieService,
+    $ensureTeacherReportAccess,
+    $reportExportService,
 ) {
     Route::get('/auth/me', function (Request $request) use ($ensureActive) {
         if ($inactiveResponse = $ensureActive($request)) {
@@ -285,30 +412,34 @@ Route::middleware('auth:sanctum')->group(function () use (
             ->orderBy('users.name')
             ->get();
 
-        $assignedExams = $room->exams()
-            ->select(
-                'exams.id',
-                'exams.title',
-                'exams.subject',
-                'exams.question_bank_id',
-                'exams.total_items',
-                'exams.duration_minutes',
-                'exams.scheduled_at',
-                'exams.schedule_start_at',
-                'exams.schedule_end_at',
-                'exams.delivery_mode',
-                'exams.one_take_only',
-                'exams.shuffle_questions',
-                'exam_room.created_at as assigned_at'
-            )
-            ->orderByDesc('exam_room.created_at')
-            ->get()
-            ->map(function ($assignedExam) use ($normalizeDeliveryMode) {
-                $assignedExam->delivery_mode = $normalizeDeliveryMode($assignedExam->delivery_mode);
+        $assignedExams = collect();
 
-                return $assignedExam;
-            })
-            ->values();
+        if (!$isAdmin($user)) {
+            $assignedExams = $room->exams()
+                ->select(
+                    'exams.id',
+                    'exams.title',
+                    'exams.subject',
+                    'exams.question_bank_id',
+                    'exams.total_items',
+                    'exams.duration_minutes',
+                    'exams.scheduled_at',
+                    'exams.schedule_start_at',
+                    'exams.schedule_end_at',
+                    'exams.delivery_mode',
+                    'exams.one_take_only',
+                    'exams.shuffle_questions',
+                    'exam_room.created_at as assigned_at'
+                )
+                ->orderByDesc('exam_room.created_at')
+                ->get()
+                ->map(function ($assignedExam) use ($normalizeDeliveryMode) {
+                    $assignedExam->delivery_mode = $normalizeDeliveryMode($assignedExam->delivery_mode);
+
+                    return $assignedExam;
+                })
+                ->values();
+        }
 
         if (!$canManageRooms($user) && $assignedExams->isNotEmpty()) {
             $examIds = $assignedExams
@@ -462,13 +593,13 @@ Route::middleware('auth:sanctum')->group(function () use (
         return response()->json(['message' => 'Room deleted']);
     });
 
-    Route::post('/rooms', function (Request $request) use ($canManageRooms, $ensureActive, $recordAudit) {
+    Route::post('/rooms', function (Request $request) use ($isStaffMasterExaminer, $ensureActive, $recordAudit) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
 
         $user = $request->user();
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -615,39 +746,36 @@ Route::middleware('auth:sanctum')->group(function () use (
         return response()->json(['message' => 'Left room successfully']);
     });
 
-    Route::get('/library/banks', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin) {
+    Route::get('/library/banks', function (Request $request) use ($isStaffMasterExaminer, $ensureActive) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         $query = QuestionBank::query()
             ->with('creator:id,name')
             ->withCount('questions')
+            ->where('created_by', $user->id)
             ->latest();
-
-        if (!$isAdmin($user)) {
-            $query->where('created_by', $user->id);
-        }
 
         return response()->json([
             'banks' => $query->get(),
         ]);
     });
 
-    Route::post('/library/import/preview', function (Request $request) use ($canManageRooms, $ensureActive, $recordAudit) {
+    Route::post('/library/import/preview', function (Request $request) use ($isStaffMasterExaminer, $ensureActive, $recordAudit) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -714,14 +842,14 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
     });
 
-    Route::post('/library/banks', function (Request $request) use ($canManageRooms, $ensureActive, $recordAudit) {
+    Route::post('/library/banks', function (Request $request) use ($isStaffMasterExaminer, $ensureActive, $recordAudit) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -861,18 +989,18 @@ Route::middleware('auth:sanctum')->group(function () use (
     Route::delete('/library/banks/{bank}', function (
         Request $request,
         QuestionBank $bank
-    ) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit) {
+    ) use ($isStaffMasterExaminer, $ensureActive, $recordAudit) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!$isAdmin($user) && (int) $bank->created_by !== (int) $user->id) {
+        if ((int) $bank->created_by !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -921,14 +1049,14 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
     });
 
-    Route::get('/exams', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin, $normalizeDeliveryMode) {
+    Route::get('/exams', function (Request $request) use ($isStaffMasterExaminer, $ensureActive, $normalizeDeliveryMode) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -937,11 +1065,8 @@ Route::middleware('auth:sanctum')->group(function () use (
             ->with('questionBank:id,title,subject,total_items')
             ->with('rooms:id,name,code')
             ->withCount('rooms')
+            ->where('created_by', $user->id)
             ->latest();
-
-        if (!$isAdmin($user)) {
-            $query->where('created_by', $user->id);
-        }
 
         $exams = $query->get()->map(function (Exam $exam) use ($normalizeDeliveryMode) {
             $exam->delivery_mode = $normalizeDeliveryMode($exam->delivery_mode);
@@ -955,9 +1080,8 @@ Route::middleware('auth:sanctum')->group(function () use (
     });
 
     Route::post('/exams', function (Request $request) use (
-        $canManageRooms,
+        $isStaffMasterExaminer,
         $ensureActive,
-        $isAdmin,
         $recordAudit,
         $findAccessibleQuestionBank,
         $normalizeDeliveryMode,
@@ -969,7 +1093,7 @@ Route::middleware('auth:sanctum')->group(function () use (
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1005,7 +1129,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             $questionBank = $findAccessibleQuestionBank(
                 $user,
                 (int) $validated['question_bank_id'],
-                $isAdmin($user),
+                false,
             );
 
             if (!$questionBank) {
@@ -1044,7 +1168,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         if ($roomIds->isNotEmpty()) {
             $allowedCount = Room::query()
                 ->whereIn('id', $roomIds)
-                ->when(!$isAdmin($user), fn ($query) => $query->where('created_by', $user->id))
+                ->where('created_by', $user->id)
                 ->count();
 
             if ($allowedCount !== $roomIds->count()) {
@@ -1096,9 +1220,8 @@ Route::middleware('auth:sanctum')->group(function () use (
     });
 
     Route::patch('/exams/{exam}', function (Request $request, Exam $exam) use (
-        $canManageRooms,
+        $isStaffMasterExaminer,
         $ensureActive,
-        $isAdmin,
         $recordAudit,
         $findAccessibleQuestionBank,
         $normalizeDeliveryMode,
@@ -1110,11 +1233,11 @@ Route::middleware('auth:sanctum')->group(function () use (
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+        if ((int) $exam->created_by !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1164,7 +1287,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             $resolvedQuestionBank = $findAccessibleQuestionBank(
                 $user,
                 (int) $resolvedQuestionBankId,
-                $isAdmin($user),
+                false,
             );
 
             if (!$resolvedQuestionBank) {
@@ -1202,7 +1325,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             if ($roomIds->isNotEmpty()) {
                 $allowedCount = Room::query()
                     ->whereIn('id', $roomIds)
-                    ->when(!$isAdmin($user), fn ($query) => $query->where('created_by', $user->id))
+                    ->where('created_by', $user->id)
                     ->count();
 
                 if ($allowedCount !== $roomIds->count()) {
@@ -1252,18 +1375,18 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
     });
 
-    Route::delete('/exams/{exam}', function (Request $request, Exam $exam) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit) {
+    Route::delete('/exams/{exam}', function (Request $request, Exam $exam) use ($isStaffMasterExaminer, $ensureActive, $recordAudit) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+        if ((int) $exam->created_by !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1287,9 +1410,8 @@ Route::middleware('auth:sanctum')->group(function () use (
     });
 
     Route::get('/exams/{exam}/live-dashboard', function (Request $request, Exam $exam) use (
-        $canManageRooms,
+        $isStaffMasterExaminer,
         $ensureActive,
-        $isAdmin,
         $normalizeDeliveryMode,
         $resolveTeacherPacedTotalItems,
         $resolveTeacherPacingState,
@@ -1301,11 +1423,11 @@ Route::middleware('auth:sanctum')->group(function () use (
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+        if ((int) $exam->created_by !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1321,7 +1443,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json(['message' => 'Room not found.'], 404);
         }
 
-        if (!$isAdmin($user) && (int) $room->created_by !== (int) $user->id) {
+        if ((int) $room->created_by !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1545,9 +1667,8 @@ Route::middleware('auth:sanctum')->group(function () use (
     });
 
     Route::post('/exams/{exam}/teacher-paced', function (Request $request, Exam $exam) use (
-        $canManageRooms,
+        $isStaffMasterExaminer,
         $ensureActive,
-        $isAdmin,
         $recordAudit,
         $normalizeDeliveryMode,
         $resolveTeacherPacedTotalItems,
@@ -1559,11 +1680,11 @@ Route::middleware('auth:sanctum')->group(function () use (
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+        if ((int) $exam->created_by !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1586,7 +1707,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json(['message' => 'Room not found.'], 404);
         }
 
-        if (!$isAdmin($user) && (int) $room->created_by !== (int) $user->id) {
+        if ((int) $room->created_by !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -2290,65 +2411,641 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
     });
 
-    Route::get('/reports/overview', function (Request $request) use ($canManageRooms, $ensureActive, $isAdmin) {
+    Route::get('/reports/overview', function (Request $request) use ($isStaffMasterExaminer, $ensureActive) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
 
         $user = $request->user();
 
-        if (!$canManageRooms($user)) {
+        if (!$isStaffMasterExaminer($user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if ($isAdmin($user)) {
-            $metrics = [
-                'total_users' => User::count(),
-                'active_users' => User::where('is_active', true)->count(),
-                'inactive_users' => User::where('is_active', false)->count(),
-                'students' => User::where('role', User::ROLE_STUDENT)->count(),
-                'staff' => User::where('role', User::ROLE_STAFF_MASTER_EXAMINER)->count(),
-                'admins' => User::where('role', User::ROLE_ADMIN)->count(),
-                'total_rooms' => Room::count(),
-                'total_exams' => Exam::count(),
-                'exam_assignments' => DB::table('exam_room')->count(),
-            ];
+        $staffRooms = Room::query()->where('created_by', $user->id);
+        $staffExams = Exam::query()->where('created_by', $user->id);
 
-            $recentActivity = AuditLog::query()
-                ->with('actor:id,name,role')
-                ->latest()
-                ->limit(14)
-                ->get();
-        } else {
-            $staffRooms = Room::query()->where('created_by', $user->id);
-            $staffExams = Exam::query()->where('created_by', $user->id);
+        $metrics = [
+            'managed_rooms' => $staffRooms->count(),
+            'managed_exams' => $staffExams->count(),
+            'students_enrolled' => DB::table('room_user')
+                ->join('rooms', 'rooms.id', '=', 'room_user.room_id')
+                ->where('rooms.created_by', $user->id)
+                ->distinct('room_user.user_id')
+                ->count('room_user.user_id'),
+            'exam_assignments' => DB::table('exam_room')
+                ->join('exams', 'exams.id', '=', 'exam_room.exam_id')
+                ->where('exams.created_by', $user->id)
+                ->count(),
+        ];
 
-            $metrics = [
-                'managed_rooms' => $staffRooms->count(),
-                'managed_exams' => $staffExams->count(),
-                'students_enrolled' => DB::table('room_user')
-                    ->join('rooms', 'rooms.id', '=', 'room_user.room_id')
-                    ->where('rooms.created_by', $user->id)
-                    ->distinct('room_user.user_id')
-                    ->count('room_user.user_id'),
-                'exam_assignments' => DB::table('exam_room')
-                    ->join('exams', 'exams.id', '=', 'exam_room.exam_id')
-                    ->where('exams.created_by', $user->id)
-                    ->count(),
-            ];
-
-            $recentActivity = AuditLog::query()
-                ->with('actor:id,name,role')
-                ->where('actor_id', $user->id)
-                ->latest()
-                ->limit(14)
-                ->get();
-        }
+        $recentActivity = AuditLog::query()
+            ->with('actor:id,name,role')
+            ->where('actor_id', $user->id)
+            ->latest()
+            ->limit(14)
+            ->get();
 
         return response()->json([
             'metrics' => $metrics,
             'recent_activity' => $recentActivity,
         ]);
+    });
+
+    Route::get('/reports/exams/{exam}/rooms/{room}/complete-results.csv', function (
+        Request $request,
+        Exam $exam,
+        Room $room
+    ) use ($ensureTeacherReportAccess, $reportExportService, $recordAudit) {
+        $access = $ensureTeacherReportAccess($request, $exam, $room);
+        if ($access instanceof JsonResponse) {
+            return $access;
+        }
+
+        /** @var User $user */
+        $user = $access;
+
+        $session = $reportExportService->buildSessionLatestResults($exam, $room);
+        $table = $reportExportService->buildCompleteResultsTable($session);
+
+        $fileLabel = trim((string) Str::slug(($exam->title ?? 'exam') . '-' . ($room->code ?? 'room')));
+        $filename = ($fileLabel !== '' ? $fileLabel : 'session') . '-complete-results-' . now()->format('Ymd_His') . '.csv';
+
+        $recordAudit(
+            $user,
+            'report.export.complete_results_csv',
+            'exam',
+            $exam->id,
+            'Exported complete results CSV',
+            [
+                'exam_id' => (int) $exam->id,
+                'room_id' => (int) $room->id,
+                'students_total' => (int) ($session['summary']['students_total'] ?? 0),
+            ],
+            $request,
+        );
+
+        return response()->streamDownload(function () use ($table): void {
+            $stream = fopen('php://output', 'w');
+            if ($stream === false) {
+                return;
+            }
+
+            fputcsv($stream, $table['headers']);
+
+            foreach ($table['rows'] as $row) {
+                fputcsv($stream, $row);
+            }
+
+            fclose($stream);
+        }, $filename, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+        ]);
+    });
+
+    Route::get('/reports/exams/{exam}/rooms/{room}/complete-results.xlsx', function (
+        Request $request,
+        Exam $exam,
+        Room $room
+    ) use ($ensureTeacherReportAccess, $reportExportService, $recordAudit) {
+        $access = $ensureTeacherReportAccess($request, $exam, $room);
+        if ($access instanceof JsonResponse) {
+            return $access;
+        }
+
+        /** @var User $user */
+        $user = $access;
+
+        $session = $reportExportService->buildSessionLatestResults($exam, $room);
+        $table = $reportExportService->buildCompleteResultsTable($session);
+
+        $spreadsheet = new Spreadsheet();
+        $resultsSheet = $spreadsheet->getActiveSheet();
+        $resultsSheet->setTitle('Results');
+        $resultsSheet->fromArray($table['headers'], null, 'A1');
+
+        if (!empty($table['rows'])) {
+            $resultsSheet->fromArray($table['rows'], null, 'A2');
+        }
+
+        $highestResultsColumn = $resultsSheet->getHighestColumn();
+        $resultsSheet->getStyle('A1:' . $highestResultsColumn . '1')->getFont()->setBold(true);
+
+        for ($columnIndex = 1; $columnIndex <= count($table['headers']); $columnIndex++) {
+            $columnName = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($columnIndex);
+            $resultsSheet->getColumnDimension($columnName)->setAutoSize(true);
+        }
+
+        $analysisSheet = $spreadsheet->createSheet();
+        $analysisSheet->setTitle('Item Analysis');
+
+        $analysisHeaders = ['Item', 'Question', 'Started', 'Answered', 'Correct', '% Answered', '% Correct'];
+        $analysisSheet->fromArray($analysisHeaders, null, 'A1');
+
+        $analysisRows = collect($session['item_summary'] ?? [])->map(function (array $item): array {
+            return [
+                (int) ($item['item_number'] ?? 0),
+                (string) ($item['question_text'] ?? ''),
+                (int) ($item['started_count'] ?? 0),
+                (int) ($item['answered_count'] ?? 0),
+                (int) ($item['correct_count'] ?? 0),
+                is_null($item['answered_percent'] ?? null) ? '' : (float) $item['answered_percent'],
+                is_null($item['correct_percent'] ?? null) ? '' : (float) $item['correct_percent'],
+            ];
+        })->values()->all();
+
+        if (!empty($analysisRows)) {
+            $analysisSheet->fromArray($analysisRows, null, 'A2');
+        }
+
+        $highestAnalysisColumn = $analysisSheet->getHighestColumn();
+        $analysisSheet->getStyle('A1:' . $highestAnalysisColumn . '1')->getFont()->setBold(true);
+
+        for ($columnIndex = 1; $columnIndex <= count($analysisHeaders); $columnIndex++) {
+            $columnName = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($columnIndex);
+            $analysisSheet->getColumnDimension($columnName)->setAutoSize(true);
+        }
+
+        $fileLabel = trim((string) Str::slug(($exam->title ?? 'exam') . '-' . ($room->code ?? 'room')));
+        $filename = ($fileLabel !== '' ? $fileLabel : 'session') . '-complete-results-' . now()->format('Ymd_His') . '.xlsx';
+        $tempFile = tempnam(sys_get_temp_dir(), 'blis_xlsx_');
+
+        if ($tempFile === false) {
+            return response()->json(['message' => 'Unable to generate export file.'], 500);
+        }
+
+        $writer = new Xlsx($spreadsheet);
+        $writer->save($tempFile);
+        $spreadsheet->disconnectWorksheets();
+        unset($spreadsheet);
+
+        $recordAudit(
+            $user,
+            'report.export.complete_results_xlsx',
+            'exam',
+            $exam->id,
+            'Exported complete results XLSX',
+            [
+                'exam_id' => (int) $exam->id,
+                'room_id' => (int) $room->id,
+                'students_total' => (int) ($session['summary']['students_total'] ?? 0),
+            ],
+            $request,
+        );
+
+        return response()->download(
+            $tempFile,
+            $filename,
+            ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']
+        )->deleteFileAfterSend(true);
+    });
+
+    Route::get('/reports/exams/{exam}/rooms/{room}/summary.pdf', function (
+        Request $request,
+        Exam $exam,
+        Room $room
+    ) use ($ensureTeacherReportAccess, $reportExportService, $recordAudit) {
+        $access = $ensureTeacherReportAccess($request, $exam, $room);
+        if ($access instanceof JsonResponse) {
+            return $access;
+        }
+
+        /** @var User $user */
+        $user = $access;
+
+        $session = $reportExportService->buildSessionLatestResults($exam, $room);
+
+        $fileLabel = trim((string) Str::slug(($exam->title ?? 'exam') . '-' . ($room->code ?? 'room')));
+        $filename = ($fileLabel !== '' ? $fileLabel : 'session') . '-results-summary-' . now()->format('Ymd_His') . '.pdf';
+
+        $recordAudit(
+            $user,
+            'report.export.summary_pdf',
+            'exam',
+            $exam->id,
+            'Exported results summary PDF',
+            [
+                'exam_id' => (int) $exam->id,
+                'room_id' => (int) $room->id,
+            ],
+            $request,
+        );
+
+        return Pdf::loadView('reports.summary_pdf', [
+            'session' => $session,
+        ])->setPaper('a4', 'portrait')->download($filename);
+    });
+
+    Route::get('/reports/exams/{exam}/rooms/{room}/answer-key.pdf', function (
+        Request $request,
+        Exam $exam,
+        Room $room
+    ) use ($ensureTeacherReportAccess, $reportExportService, $recordAudit) {
+        $access = $ensureTeacherReportAccess($request, $exam, $room);
+        if ($access instanceof JsonResponse) {
+            return $access;
+        }
+
+        /** @var User $user */
+        $user = $access;
+
+        $answerKey = $reportExportService->buildAnswerKey($exam);
+
+        $fileLabel = trim((string) Str::slug(($exam->title ?? 'exam') . '-' . ($room->code ?? 'room')));
+        $filename = ($fileLabel !== '' ? $fileLabel : 'session') . '-answer-key-' . now()->format('Ymd_His') . '.pdf';
+
+        $recordAudit(
+            $user,
+            'report.export.answer_key_pdf',
+            'exam',
+            $exam->id,
+            'Exported answer key PDF',
+            [
+                'exam_id' => (int) $exam->id,
+                'room_id' => (int) $room->id,
+            ],
+            $request,
+        );
+
+        return Pdf::loadView('reports.answer_key_pdf', [
+            'exam' => [
+                'id' => (int) $exam->id,
+                'title' => $exam->title,
+                'subject' => $exam->subject,
+            ],
+            'room' => [
+                'id' => (int) $room->id,
+                'name' => $room->name,
+                'code' => $room->code,
+            ],
+            'answerKey' => $answerKey,
+            'generatedAt' => now(),
+        ])->setPaper('a4', 'portrait')->download($filename);
+    });
+
+    Route::get('/reports/exams/{exam}/rooms/{room}/students/{student}/student-report.pdf', function (
+        Request $request,
+        Exam $exam,
+        Room $room,
+        User $student
+    ) use ($ensureTeacherReportAccess, $reportExportService, $recordAudit) {
+        $access = $ensureTeacherReportAccess($request, $exam, $room);
+        if ($access instanceof JsonResponse) {
+            return $access;
+        }
+
+        /** @var User $user */
+        $user = $access;
+
+        if ($student->role !== User::ROLE_STUDENT) {
+            return response()->json(['message' => 'Selected user is not a student.'], 422);
+        }
+
+        $isMember = $room->members()->where('users.id', (int) $student->id)->exists();
+        if (!$isMember) {
+            return response()->json(['message' => 'Student is not enrolled in the selected room.'], 422);
+        }
+
+        $attempt = $reportExportService->findLatestAttemptForStudent($exam, $room, (int) $student->id);
+        if (!$attempt) {
+            return response()->json(['message' => 'No attempt found for this student in the selected session.'], 404);
+        }
+
+        $report = $reportExportService->buildAttemptReportData($attempt);
+
+        $studentLabel = trim((string) ($report['student']['student_id'] ?? 'student'));
+        $studentSlug = trim((string) Str::slug((string) ($report['student']['name'] ?? 'student')));
+        $baseName = trim($studentLabel . '-' . ($studentSlug !== '' ? $studentSlug : 'student'));
+        $filename = ($baseName !== '' ? $baseName : 'student-report')
+            . '-attempt-' . (int) $attempt->id
+            . '.pdf';
+
+        $recordAudit(
+            $user,
+            'report.export.individual_student_pdf',
+            'exam_attempt',
+            $attempt->id,
+            'Exported individual student report PDF',
+            [
+                'exam_id' => (int) $exam->id,
+                'room_id' => (int) $room->id,
+                'student_id' => (int) $student->id,
+            ],
+            $request,
+        );
+
+        return Pdf::loadView('reports.student_report_pdf', [
+            'report' => $report,
+        ])->setPaper('a4', 'portrait')->download($filename);
+    });
+
+    Route::post('/reports/exams/{exam}/rooms/{room}/students/{student}/student-report.email', function (
+        Request $request,
+        Exam $exam,
+        Room $room,
+        User $student
+    ) use ($ensureTeacherReportAccess, $reportExportService, $recordAudit) {
+        $access = $ensureTeacherReportAccess($request, $exam, $room);
+        if ($access instanceof JsonResponse) {
+            return $access;
+        }
+
+        /** @var User $user */
+        $user = $access;
+
+        $validated = $request->validate([
+            'verified_only' => ['sometimes', 'boolean'],
+        ]);
+        $verifiedOnly = (bool) ($validated['verified_only'] ?? false);
+
+        if ($student->role !== User::ROLE_STUDENT) {
+            return response()->json(['message' => 'Selected user is not a student.'], 422);
+        }
+
+        $isMember = $room->members()->where('users.id', (int) $student->id)->exists();
+        if (!$isMember) {
+            return response()->json(['message' => 'Student is not enrolled in the selected room.'], 422);
+        }
+
+        $recipientEmail = trim((string) ($student->email ?? ''));
+        if ($recipientEmail === '' || !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
+            return response()->json(['message' => 'Student does not have a valid email address.'], 422);
+        }
+
+        if ($verifiedOnly && is_null($student->email_verified_at)) {
+            return response()->json(['message' => 'Student email is not verified.'], 422);
+        }
+
+        $attempt = $reportExportService->findLatestAttemptForStudent($exam, $room, (int) $student->id);
+        if (!$attempt) {
+            return response()->json(['message' => 'No attempt found for this student in the selected session.'], 404);
+        }
+
+        $report = $reportExportService->buildAttemptReportData($attempt);
+
+        $studentLabel = trim((string) ($report['student']['student_id'] ?? 'student'));
+        $studentSlug = trim((string) Str::slug((string) ($report['student']['name'] ?? 'student')));
+        $baseName = trim($studentLabel . '-' . ($studentSlug !== '' ? $studentSlug : 'student'));
+        $filename = ($baseName !== '' ? $baseName : 'student-report')
+            . '-attempt-' . (int) $attempt->id
+            . '.pdf';
+
+        $pdfBinary = Pdf::loadView('reports.student_report_pdf', [
+            'report' => $report,
+        ])->setPaper('a4', 'portrait')->output();
+
+        try {
+            Mail::to($recipientEmail)->send(new StudentReportMail(
+                $report,
+                $user,
+                $pdfBinary,
+                $filename
+            ));
+        } catch (\Throwable $exception) {
+            return response()->json([
+                'message' => 'Failed to send report email.',
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+
+        $recordAudit(
+            $user,
+            'report.email.individual_student_pdf',
+            'exam_attempt',
+            $attempt->id,
+            'Emailed individual student report PDF',
+            [
+                'exam_id' => (int) $exam->id,
+                'room_id' => (int) $room->id,
+                'student_id' => (int) $student->id,
+                'recipient_email' => $recipientEmail,
+                'verified_only' => $verifiedOnly,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Student report emailed successfully.',
+            'student' => [
+                'id' => (int) $student->id,
+                'name' => $student->name,
+                'student_id' => $student->student_id,
+                'email' => $recipientEmail,
+            ],
+            'attempt_id' => (int) $attempt->id,
+        ]);
+    });
+
+    Route::post('/reports/exams/{exam}/rooms/{room}/student-reports.email', function (
+        Request $request,
+        Exam $exam,
+        Room $room
+    ) use ($ensureTeacherReportAccess, $reportExportService, $recordAudit) {
+        $access = $ensureTeacherReportAccess($request, $exam, $room);
+        if ($access instanceof JsonResponse) {
+            return $access;
+        }
+
+        /** @var User $user */
+        $user = $access;
+
+        $validated = $request->validate([
+            'verified_only' => ['sometimes', 'boolean'],
+        ]);
+        $verifiedOnly = (bool) ($validated['verified_only'] ?? false);
+
+        $students = $room->members()
+            ->select('users.id', 'users.name', 'users.email', 'users.student_id', 'users.email_verified_at', 'users.role')
+            ->where('users.role', User::ROLE_STUDENT)
+            ->orderBy('users.name')
+            ->get();
+
+        $latestAttempts = $reportExportService
+            ->getLatestSessionAttemptsByStudent($exam, $room)
+            ->keyBy('user_id');
+
+        $sent = [];
+        $issues = [];
+
+        foreach ($students as $student) {
+            $recipientEmail = trim((string) ($student->email ?? ''));
+
+            if ($recipientEmail === '' || !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
+                $issues[] = [
+                    'student_id' => (int) $student->id,
+                    'student_name' => $student->name,
+                    'student_number' => $student->student_id,
+                    'reason' => 'invalid_email',
+                ];
+                continue;
+            }
+
+            if ($verifiedOnly && is_null($student->email_verified_at)) {
+                $issues[] = [
+                    'student_id' => (int) $student->id,
+                    'student_name' => $student->name,
+                    'student_number' => $student->student_id,
+                    'reason' => 'email_not_verified',
+                ];
+                continue;
+            }
+
+            /** @var ExamAttempt|null $attempt */
+            $attempt = $latestAttempts->get((int) $student->id);
+            if (!$attempt) {
+                $issues[] = [
+                    'student_id' => (int) $student->id,
+                    'student_name' => $student->name,
+                    'student_number' => $student->student_id,
+                    'reason' => 'no_attempt',
+                ];
+                continue;
+            }
+
+            $report = $reportExportService->buildAttemptReportData($attempt);
+
+            $studentLabel = trim((string) ($report['student']['student_id'] ?? 'student'));
+            $studentSlug = trim((string) Str::slug((string) ($report['student']['name'] ?? 'student')));
+            $baseName = trim($studentLabel . '-' . ($studentSlug !== '' ? $studentSlug : 'student'));
+            $filename = ($baseName !== '' ? $baseName : 'student-report')
+                . '-attempt-' . (int) $attempt->id
+                . '.pdf';
+
+            $pdfBinary = Pdf::loadView('reports.student_report_pdf', [
+                'report' => $report,
+            ])->setPaper('a4', 'portrait')->output();
+
+            try {
+                Mail::to($recipientEmail)->send(new StudentReportMail(
+                    $report,
+                    $user,
+                    $pdfBinary,
+                    $filename
+                ));
+            } catch (\Throwable $exception) {
+                $issues[] = [
+                    'student_id' => (int) $student->id,
+                    'student_name' => $student->name,
+                    'student_number' => $student->student_id,
+                    'reason' => 'mail_send_failed',
+                    'error' => $exception->getMessage(),
+                ];
+                continue;
+            }
+
+            $sent[] = [
+                'student_id' => (int) $student->id,
+                'student_name' => $student->name,
+                'student_number' => $student->student_id,
+                'email' => $recipientEmail,
+                'attempt_id' => (int) $attempt->id,
+            ];
+        }
+
+        $summary = [
+            'students_total' => (int) $students->count(),
+            'sent_count' => (int) count($sent),
+            'issue_count' => (int) count($issues),
+            'verified_only' => $verifiedOnly,
+        ];
+
+        $recordAudit(
+            $user,
+            'report.email.student_reports_bulk',
+            'exam',
+            $exam->id,
+            'Emailed bulk student report PDFs',
+            [
+                'exam_id' => (int) $exam->id,
+                'room_id' => (int) $room->id,
+                'students_total' => (int) $students->count(),
+                'sent_count' => (int) count($sent),
+                'issue_count' => (int) count($issues),
+                'verified_only' => $verifiedOnly,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Bulk student report email process completed.',
+            'summary' => $summary,
+            'sent' => $sent,
+            'issues' => $issues,
+        ]);
+    });
+
+    Route::get('/reports/exams/{exam}/rooms/{room}/student-reports.zip', function (
+        Request $request,
+        Exam $exam,
+        Room $room
+    ) use ($ensureTeacherReportAccess, $reportExportService, $recordAudit) {
+        $access = $ensureTeacherReportAccess($request, $exam, $room);
+        if ($access instanceof JsonResponse) {
+            return $access;
+        }
+
+        /** @var User $user */
+        $user = $access;
+
+        $attempts = $reportExportService->getSessionAttempts($exam, $room);
+
+        if ($attempts->isEmpty()) {
+            return response()->json([
+                'message' => 'No student attempts are available for this session.',
+            ], 422);
+        }
+
+        $zipPath = tempnam(sys_get_temp_dir(), 'blis_zip_');
+        if ($zipPath === false) {
+            return response()->json(['message' => 'Unable to create ZIP export.'], 500);
+        }
+
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath, ZipArchive::OVERWRITE) !== true) {
+            @unlink($zipPath);
+
+            return response()->json(['message' => 'Unable to open ZIP export stream.'], 500);
+        }
+
+        foreach ($attempts as $attempt) {
+            $report = $reportExportService->buildAttemptReportData($attempt);
+
+            $pdfBinary = Pdf::loadView('reports.student_report_pdf', [
+                'report' => $report,
+            ])->setPaper('a4', 'portrait')->output();
+
+            $studentLabel = trim((string) ($report['student']['student_id'] ?? 'student'));
+            $studentSlug = trim((string) Str::slug((string) ($report['student']['name'] ?? 'student')));
+            $baseName = trim($studentLabel . '-' . ($studentSlug !== '' ? $studentSlug : 'student'));
+            $entryName = ($baseName !== '' ? $baseName : 'student')
+                . '-attempt-' . (int) $attempt->id
+                . '.pdf';
+
+            $zip->addFromString($entryName, $pdfBinary);
+        }
+
+        $zip->close();
+
+        $fileLabel = trim((string) Str::slug(($exam->title ?? 'exam') . '-' . ($room->code ?? 'room')));
+        $filename = ($fileLabel !== '' ? $fileLabel : 'session') . '-student-reports-' . now()->format('Ymd_His') . '.zip';
+
+        $recordAudit(
+            $user,
+            'report.export.student_reports_zip',
+            'exam',
+            $exam->id,
+            'Exported bulk student reports ZIP',
+            [
+                'exam_id' => (int) $exam->id,
+                'room_id' => (int) $room->id,
+                'attempt_count' => (int) $attempts->count(),
+            ],
+            $request,
+        );
+
+        return response()->download($zipPath, $filename, [
+            'Content-Type' => 'application/zip',
+        ])->deleteFileAfterSend(true);
     });
 
     Route::get('/settings/system', function (Request $request) use (
@@ -2414,6 +3111,8 @@ Route::middleware('auth:sanctum')->group(function () use (
             'allow_public_registration' => ['sometimes', 'required', 'boolean'],
             'maintenance_mode' => ['sometimes', 'required', 'boolean'],
             'announcement_banner' => ['sometimes', 'nullable', 'string', 'max:500'],
+            'terms_of_use_text' => ['sometimes', 'required', 'string', 'max:20000'],
+            'privacy_policy_text' => ['sometimes', 'required', 'string', 'max:20000'],
         ]);
 
         foreach ($validated as $key => $value) {
@@ -2460,7 +3159,12 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'search' => ['nullable', 'string', 'max:255'],
                 'role' => ['nullable', Rule::in(User::ROLES)],
                 'status' => ['nullable', Rule::in(['active', 'inactive'])],
+                'page' => ['nullable', 'integer', 'min:1'],
+                'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
             ]);
+
+            $page = (int) ($validated['page'] ?? 1);
+            $perPage = (int) ($validated['per_page'] ?? 50);
 
             $users = User::query()
                 ->select('id', 'name', 'email', 'student_id', 'role', 'is_active', 'created_at', 'updated_at')
@@ -2483,10 +3187,18 @@ Route::middleware('auth:sanctum')->group(function () use (
                     fn ($query) => $query->where('is_active', $validated['status'] === 'active')
                 )
                 ->orderByDesc('id')
-                ->get();
+                ->paginate($perPage, ['*'], 'page', $page);
 
             return response()->json([
-                'users' => $users,
+                'users' => $users->items(),
+                'meta' => [
+                    'current_page' => $users->currentPage(),
+                    'last_page' => $users->lastPage(),
+                    'per_page' => $users->perPage(),
+                    'total' => $users->total(),
+                    'from' => $users->firstItem(),
+                    'to' => $users->lastItem(),
+                ],
             ]);
         });
 
@@ -2636,6 +3348,73 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json([
                 'message' => 'User updated',
                 'user' => $user,
+            ]);
+        });
+
+        Route::post('/users/{user}/recover-account', function (Request $request, User $user) use ($ensureActive, $isAdmin, $recordAudit) {
+            if ($inactiveResponse = $ensureActive($request)) {
+                return $inactiveResponse;
+            }
+
+            $actor = $request->user();
+            if (!$isAdmin($actor)) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            if ($user->role !== User::ROLE_STUDENT) {
+                return response()->json([
+                    'message' => 'Account recovery via student ID is only available for student accounts.',
+                ], 422);
+            }
+
+            if (blank($user->student_id)) {
+                return response()->json([
+                    'message' => 'This student account has no student ID on file.',
+                ], 422);
+            }
+
+            $validated = $request->validate([
+                'student_id' => ['required', 'string', 'max:32', 'regex:/^\d{7,20}$/'],
+                'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+                'password' => ['required', 'string', 'min:8'],
+            ]);
+
+            $enteredStudentId = trim((string) $validated['student_id']);
+            $storedStudentId = trim((string) $user->student_id);
+
+            if ($enteredStudentId !== $storedStudentId) {
+                return response()->json([
+                    'message' => 'Student ID verification failed.',
+                ], 422);
+            }
+
+            $oldEmail = $user->email;
+
+            $user->email = $validated['email'];
+            $user->password = $validated['password'];
+            $user->save();
+
+            // Revoke all active sessions/tokens so only the recovered credentials remain valid.
+            $user->tokens()->delete();
+
+            $recordAudit(
+                $actor,
+                'admin.user.recover',
+                'user',
+                $user->id,
+                'Admin recovered student account access',
+                [
+                    'old_email' => $oldEmail,
+                    'new_email' => $user->email,
+                    'student_id' => $user->student_id,
+                    'tokens_revoked' => true,
+                ],
+                $request,
+            );
+
+            return response()->json([
+                'message' => 'Student account recovered. Email and password were updated and active sessions were revoked.',
+                'user' => $user->only(['id', 'name', 'email', 'student_id', 'role', 'is_active']),
             ]);
         });
 

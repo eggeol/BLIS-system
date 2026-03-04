@@ -34,6 +34,14 @@ export function useDashboardDataServices() {
     updateTeacherPacing: (examId, payload) => examsApi.updateTeacherPacing(examId, payload),
 
     getReportsOverview: () => reportsApi.overview(),
+    exportCompleteResultsXlsx: (examId, roomId) => reportsApi.completeResultsXlsx(examId, roomId),
+    exportCompleteResultsCsv: (examId, roomId) => reportsApi.completeResultsCsv(examId, roomId),
+    exportResultsSummaryPdf: (examId, roomId) => reportsApi.resultsSummaryPdf(examId, roomId),
+    exportAnswerKeyPdf: (examId, roomId) => reportsApi.answerKeyPdf(examId, roomId),
+    exportStudentReportPdf: (examId, roomId, studentId) => reportsApi.studentReportPdf(examId, roomId, studentId),
+    exportStudentReportsZip: (examId, roomId) => reportsApi.studentReportsZip(examId, roomId),
+    emailStudentReportPdf: (examId, roomId, studentId, payload) => reportsApi.emailStudentReportPdf(examId, roomId, studentId, payload),
+    emailStudentReportsBulk: (examId, roomId, payload) => reportsApi.emailStudentReportsBulk(examId, roomId, payload),
 
     getSystemSettings: () => settingsApi.getSystem(),
     saveSystemSettings: (payload) => settingsApi.updateSystem(payload),
@@ -41,6 +49,7 @@ export function useDashboardDataServices() {
     getUsers: (params) => usersApi.list(params),
     createUser: (payload) => usersApi.create(payload),
     updateUser: (userId, payload) => usersApi.update(userId, payload),
+    recoverUserAccount: (userId, payload) => usersApi.recoverAccount(userId, payload),
 
     getAuditLogs: (params) => auditApi.list(params),
   }

@@ -95,8 +95,9 @@ const isMobileViewport = ref(false)
 const mobileMediaQuery = '(max-width: 900px)'
 
 const normalizedRole = computed(() => String(auth.user?.role ?? 'student').toLowerCase())
-const isManagementRole = computed(() => ['admin', 'staff_master_examiner'].includes(normalizedRole.value))
 const isAdminRole = computed(() => normalizedRole.value === 'admin')
+const isStaffRole = computed(() => ['staff_master_examiner', 'faculty'].includes(normalizedRole.value))
+const isManagementRole = computed(() => isAdminRole.value || isStaffRole.value)
 
 const studentNavItems = [
   { name: 'dashboard-home', label: 'Dashboard', icon: LayoutDashboard },
@@ -114,7 +115,8 @@ const staffNavItems = [
 
 const adminNavItems = [
   { name: 'dashboard-users', label: 'Users', icon: UserRound },
-  ...staffNavItems,
+  { name: 'dashboard-room-management', label: 'Room', icon: DoorOpen },
+  { name: 'dashboard-settings', label: 'Settings', icon: Settings },
   { name: 'dashboard-audit', label: 'Audit', icon: ClipboardList },
 ]
 
@@ -130,6 +132,7 @@ const pageSubtitle = computed(() => String(route.meta?.sub ?? 'Manage your modul
 
 const displayName = computed(() => auth.user?.name ?? 'User')
 const displayRole = computed(() => {
+  if (normalizedRole.value === 'faculty') return 'Faculty'
   if (normalizedRole.value === 'staff_master_examiner') return 'Staff / Master Examiner'
   if (normalizedRole.value === 'admin') return 'Administrator'
   return 'Student'

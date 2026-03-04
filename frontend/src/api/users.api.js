@@ -12,6 +12,10 @@ class UsersApi {
   update(userId, payload) {
     return http.patch(`/admin/users/${userId}`, payload)
   }
+
+  recoverAccount(userId, payload) {
+    return http.post(`/admin/users/${userId}/recover-account`, payload)
+  }
 }
 
 export const usersApi = new UsersApi()

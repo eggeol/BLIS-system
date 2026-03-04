@@ -95,6 +95,42 @@ const router = createRouter({
   routes,
 })
 
+function normalizedRole(role) {
+  return String(role ?? 'student').toLowerCase()
+}
+
+function dashboardDefaultRoute(role) {
+  if (['admin', 'staff_master_examiner', 'faculty'].includes(role)) {
+    return 'dashboard-room-management'
+  }
+
+  return 'dashboard-home'
+}
+
+const dashboardRoutesByRole = {
+  student: ['dashboard-home', 'dashboard-rooms', 'dashboard-analytics'],
+  staff_master_examiner: [
+    'dashboard-room-management',
+    'dashboard-library',
+    'dashboard-exams',
+    'dashboard-reports',
+    'dashboard-settings',
+  ],
+  faculty: [
+    'dashboard-room-management',
+    'dashboard-library',
+    'dashboard-exams',
+    'dashboard-reports',
+    'dashboard-settings',
+  ],
+  admin: [
+    'dashboard-room-management',
+    'dashboard-settings',
+    'dashboard-users',
+    'dashboard-audit',
+  ],
+}
+
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   const isPublic = ['login', 'register', 'forgot-password'].includes(String(to.name))
@@ -107,8 +143,21 @@ router.beforeEach(async (to) => {
     return { name: 'login' }
   }
 
+  const role = normalizedRole(auth.user?.role)
+
   if (isPublic && auth.isAuthenticated) {
-    return { name: 'dashboard-home' }
+    return { name: dashboardDefaultRoute(role) }
+  }
+
+  const routeName = String(to.name ?? '')
+  const isDashboardRoute = routeName.startsWith('dashboard-')
+
+  if (isDashboardRoute) {
+    const allowedRoutes = dashboardRoutesByRole[role] ?? dashboardRoutesByRole.student
+
+    if (!allowedRoutes.includes(routeName)) {
+      return { name: dashboardDefaultRoute(role) }
+    }
   }
 })
 

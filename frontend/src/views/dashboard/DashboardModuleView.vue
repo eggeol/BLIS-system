@@ -332,7 +332,7 @@
                   <DoorOpen :size="18" />
                   <h3>Rooms</h3>
                 </div>
-                <button class="primary-btn add-room-btn" :disabled="roomLoading" @click="openCreateRoomModal">
+                <button v-if="canCreateRooms" class="primary-btn add-room-btn" :disabled="roomLoading" @click="openCreateRoomModal">
                   <Plus :size="16" />
                   Add Room
                 </button>
@@ -346,8 +346,14 @@
 
               <div v-else-if="rooms.length === 0" class="room-empty-state">
                 <House :size="42" />
-                <h4>Add a Room</h4>
-                <p>This page allows you to create and manage rooms for your assigned examinations.</p>
+                <h4>{{ canCreateRooms ? 'Add a Room' : 'No Rooms Available' }}</h4>
+                <p>
+                  {{
+                    canCreateRooms
+                      ? 'This page allows you to create and manage rooms for your assigned examinations.'
+                      : 'No rooms are available to manage yet.'
+                  }}
+                </p>
               </div>
 
               <div v-else class="room-layout">
@@ -404,7 +410,7 @@
                     </header>
 
                     <div class="room-detail-grid">
-                      <article class="detail-card">
+                      <article v-if="isStaffRole" class="detail-card">
                         <header class="room-section-head">
                           <h5>Exams</h5>
                         </header>
@@ -421,7 +427,7 @@
                               </p>
                             </div>
 
-                            <div class="exam-card-actions">
+                            <div v-if="canViewExamResults" class="exam-card-actions">
                               <button
                                 type="button"
                                 class="primary-btn exam-start-btn"
@@ -481,7 +487,7 @@
             </article>
 
             <teleport to="body">
-              <div v-if="showCreateRoomModal" class="modal-backdrop" @click.self="closeCreateRoomModal">
+              <div v-if="showCreateRoomModal && canCreateRooms" class="modal-backdrop" @click.self="closeCreateRoomModal">
                 <div class="modal-card">
                   <header class="modal-head">
                     <h4>Add Room</h4>
@@ -1113,7 +1119,7 @@
           </template>
         </section>
 
-        <section v-else-if="activeNav === 'library'" class="library-view">
+        <section v-else-if="activeNav === 'library' && canManageAssessmentContent" class="library-view">
           <div v-if="libraryMessage" class="feedback success">
             <CheckCircle2 :size="15" />
             <span>{{ libraryMessage }}</span>
@@ -1340,7 +1346,7 @@
           </teleport>
         </section>
 
-        <section v-else-if="activeNav === 'exams'" class="room-view">
+        <section v-else-if="activeNav === 'exams' && canManageAssessmentContent" class="room-view">
           <div v-if="examMessage" class="feedback success">
             <CheckCircle2 :size="15" />
             <span>{{ examMessage }}</span>
@@ -1560,11 +1566,157 @@
 
         </section>
 
-        <section v-else-if="activeNav === 'reports'" class="dashboard-view">
+        <section v-else-if="activeNav === 'reports' && isStaffRole" class="dashboard-view">
           <div v-if="reportError" class="feedback danger">
             <AlertCircle :size="15" />
             <span>{{ reportError }}</span>
           </div>
+          <div v-if="reportExportMessage" class="feedback success">
+            <CheckCircle2 :size="15" />
+            <span>{{ reportExportMessage }}</span>
+          </div>
+          <div v-if="reportExportError" class="feedback danger">
+            <AlertCircle :size="15" />
+            <span>{{ reportExportError }}</span>
+          </div>
+
+          <article class="surface-card">
+            <header class="surface-head">
+              <h3>Export Session Reports</h3>
+              <button type="button" class="ghost-btn" :disabled="reportTargetsLoading" @click="loadReportExportTargets(true)">
+                <RefreshCw :size="14" :class="{ 'spin-soft': reportTargetsLoading }" />
+                Refresh
+              </button>
+            </header>
+
+            <div v-if="reportTargetsLoading" class="room-detail-loading">
+              <RefreshCw :size="15" class="spin-soft" />
+              <span>Loading export targets...</span>
+            </div>
+
+            <template v-else>
+              <div class="settings-grid">
+                <label class="field-stack">
+                  <span class="field-label">Exam</span>
+                  <select v-model="reportExportForm.exam_id" class="text-input">
+                    <option value="">Select exam</option>
+                    <option v-for="exam in reportExportExams" :key="exam.id" :value="String(exam.id)">
+                      {{ exam.title }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="field-stack">
+                  <span class="field-label">Room</span>
+                  <select v-model="reportExportForm.room_id" class="text-input" :disabled="!reportExportForm.exam_id">
+                    <option value="">Select room</option>
+                    <option v-for="room in reportExportRoomOptions" :key="room.id" :value="String(room.id)">
+                      {{ room.name }} ({{ room.code }})
+                    </option>
+                  </select>
+                </label>
+
+                <label class="field-stack">
+                  <span class="field-label">Student (Individual PDF)</span>
+                  <select
+                    v-model="reportExportForm.student_id"
+                    class="text-input"
+                    :disabled="!reportExportForm.room_id || reportStudentsLoading || reportExportStudents.length === 0"
+                  >
+                    <option value="">Select student</option>
+                    <option v-for="student in reportExportStudents" :key="student.id" :value="String(student.id)">
+                      {{ student.name }} ({{ student.student_id || 'No ID' }})
+                    </option>
+                  </select>
+                </label>
+
+                <div class="field-stack">
+                  <span class="field-label">Email Delivery</span>
+                  <label class="check-item">
+                    <input v-model="reportExportForm.verified_only" type="checkbox" />
+                    <span>Send only to verified student emails</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="modal-actions report-export-actions">
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="!canExportSessionReports || reportExportingKey !== ''"
+                  @click="exportReport('xlsx')"
+                >
+                  <RefreshCw v-if="reportExportingKey === 'xlsx'" :size="14" class="spin-soft" />
+                  <span>Complete Results (XLSX)</span>
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="!canExportSessionReports || reportExportingKey !== ''"
+                  @click="exportReport('csv')"
+                >
+                  <RefreshCw v-if="reportExportingKey === 'csv'" :size="14" class="spin-soft" />
+                  <span>Complete Results (CSV)</span>
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="!canExportSessionReports || reportExportingKey !== ''"
+                  @click="exportReport('summary_pdf')"
+                >
+                  <RefreshCw v-if="reportExportingKey === 'summary_pdf'" :size="14" class="spin-soft" />
+                  <span>Results Summary (PDF)</span>
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="!canExportSessionReports || reportExportingKey !== ''"
+                  @click="exportReport('answer_key_pdf')"
+                >
+                  <RefreshCw v-if="reportExportingKey === 'answer_key_pdf'" :size="14" class="spin-soft" />
+                  <span>Answer Key (PDF)</span>
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="!canExportSingleStudentReport || reportExportingKey !== ''"
+                  @click="exportReport('student_pdf')"
+                >
+                  <RefreshCw v-if="reportExportingKey === 'student_pdf'" :size="14" class="spin-soft" />
+                  <span>Individual Student (PDF)</span>
+                </button>
+                <button
+                  type="button"
+                  class="primary-btn"
+                  :disabled="!canExportSessionReports || reportExportingKey !== ''"
+                  @click="exportReport('student_zip')"
+                >
+                  <RefreshCw v-if="reportExportingKey === 'student_zip'" :size="14" class="spin-soft" />
+                  <span>All Student Reports (ZIP)</span>
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="!canExportSingleStudentReport || reportExportingKey !== ''"
+                  @click="sendReportEmail('student_email')"
+                >
+                  <RefreshCw v-if="reportExportingKey === 'student_email'" :size="14" class="spin-soft" />
+                  <span>Email Individual PDF</span>
+                </button>
+                <button
+                  type="button"
+                  class="primary-btn"
+                  :disabled="!canExportSessionReports || reportExportingKey !== ''"
+                  @click="sendReportEmail('student_email_bulk')"
+                >
+                  <RefreshCw v-if="reportExportingKey === 'student_email_bulk'" :size="14" class="spin-soft" />
+                  <span>Email All Student Reports</span>
+                </button>
+              </div>
+
+              <p class="muted">System administrators do not have access to exam result exports.</p>
+            </template>
+          </article>
 
           <div class="stats-grid">
             <article class="stat-card" v-for="card in reportMetricCards" :key="card.label">
@@ -1669,6 +1821,26 @@
                     :disabled="!settingsCanEdit"
                   />
                 </label>
+
+                <label class="field-stack">
+                  <span class="field-label">Terms of Use</span>
+                  <textarea
+                    v-model.trim="settingsForm.terms_of_use_text"
+                    rows="10"
+                    class="text-input textarea-input"
+                    :disabled="!settingsCanEdit"
+                  />
+                </label>
+
+                <label class="field-stack">
+                  <span class="field-label">Privacy Policy</span>
+                  <textarea
+                    v-model.trim="settingsForm.privacy_policy_text"
+                    rows="10"
+                    class="text-input textarea-input"
+                    :disabled="!settingsCanEdit"
+                  />
+                </label>
               </div>
 
               <div class="modal-actions">
@@ -1717,10 +1889,6 @@
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
               </select>
-              <button type="button" class="ghost-btn" :disabled="usersLoading" @click="loadAdminUsers">
-                <RefreshCw :size="14" :class="{ 'spin-soft': usersLoading }" />
-                Apply
-              </button>
             </div>
 
             <div v-if="usersLoading && adminUsers.length === 0" class="room-empty-state">
@@ -1754,8 +1922,43 @@
                     <Pencil :size="15" />
                     Edit
                   </button>
+                  <button
+                    v-if="user.role === 'student'"
+                    type="button"
+                    class="ghost-btn"
+                    :disabled="usersRecovering"
+                    @click="openRecoverUserModal(user)"
+                  >
+                    <ShieldCheck :size="15" />
+                    Recover
+                  </button>
                 </div>
               </article>
+            </div>
+
+            <div v-if="usersPagination.total > 0" class="management-toolbar users-pagination">
+              <p class="muted">{{ usersRangeLabel }}</p>
+              <div class="management-actions">
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="usersLoading || !canGoToPreviousUsersPage"
+                  @click="loadAdminUsers({ page: usersPagination.current_page - 1 })"
+                >
+                  Previous
+                </button>
+                <span class="pill neutral">
+                  Page {{ usersPagination.current_page }} of {{ usersPagination.last_page }}
+                </span>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  :disabled="usersLoading || !canGoToNextUsersPage"
+                  @click="loadAdminUsers({ page: usersPagination.current_page + 1 })"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           </article>
 
@@ -1822,6 +2025,73 @@
                   >
                     <RefreshCw v-if="usersSaving" :size="14" class="spin-soft" />
                     <span>{{ usersSaving ? 'Saving...' : (userForm.id ? 'Update User' : 'Create User') }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </teleport>
+
+          <teleport to="body">
+            <div v-if="showRecoverUserModal" class="modal-backdrop" @click.self="closeRecoverUserModal">
+              <div class="modal-card">
+                <header class="modal-head">
+                  <h4>Recover Student Account</h4>
+                  <button type="button" class="modal-close" @click="closeRecoverUserModal">
+                    <X :size="16" />
+                  </button>
+                </header>
+
+                <p class="muted">
+                  Recover access for <strong>{{ recoverTargetUser?.name }}</strong>
+                  (<code>{{ recoverTargetUser?.email }}</code>).
+                  This keeps historical exam data under the same account.
+                </p>
+
+                <label class="field-stack">
+                  <span class="field-label">Verify Student ID</span>
+                  <input
+                    v-model.trim="recoverForm.student_id"
+                    type="text"
+                    class="text-input"
+                    maxlength="32"
+                    inputmode="numeric"
+                    placeholder="Enter student ID on file"
+                  />
+                </label>
+
+                <label class="field-stack">
+                  <span class="field-label">New Email</span>
+                  <input
+                    v-model.trim="recoverForm.email"
+                    type="email"
+                    class="text-input"
+                    maxlength="255"
+                    placeholder="new-email@example.com"
+                  />
+                </label>
+
+                <label class="field-stack">
+                  <span class="field-label">Temporary Password</span>
+                  <input
+                    v-model="recoverForm.password"
+                    type="password"
+                    class="text-input"
+                    minlength="8"
+                    placeholder="At least 8 characters"
+                  />
+                  <small class="muted">All active sessions will be revoked after recovery.</small>
+                </label>
+
+                <div class="modal-actions">
+                  <button type="button" class="ghost-btn" :disabled="usersRecovering" @click="closeRecoverUserModal">Cancel</button>
+                  <button
+                    type="button"
+                    class="primary-btn"
+                    :disabled="usersRecovering || !recoverForm.student_id.trim() || !recoverForm.email.trim() || recoverForm.password.length < 8"
+                    @click="handleRecoverUserAccount"
+                  >
+                    <RefreshCw v-if="usersRecovering" :size="14" class="spin-soft" />
+                    <span>{{ usersRecovering ? 'Recovering...' : 'Recover Account' }}</span>
                   </button>
                 </div>
               </div>
@@ -1955,6 +2225,7 @@ const services = useDashboardDataServices()
 
 const sidebarCollapsed = ref(false)
 const DASHBOARD_NAV_STORAGE_KEY = 'blis.dashboard.active_nav'
+const USERS_DEFAULT_PAGE_SIZE = 50
 
 function readPersistedDashboardNav() {
   if (typeof window === 'undefined') return ''
@@ -2051,6 +2322,19 @@ const reportLoading = ref(false)
 const reportError = ref('')
 const reportMetrics = ref({})
 const reportActivity = ref([])
+const reportTargetsLoading = ref(false)
+const reportStudentsLoading = ref(false)
+const reportExportingKey = ref('')
+const reportExportError = ref('')
+const reportExportMessage = ref('')
+const reportExportExams = ref([])
+const reportExportStudents = ref([])
+const reportExportForm = reactive({
+  exam_id: '',
+  room_id: '',
+  student_id: '',
+  verified_only: false,
+})
 
 const settingsLoading = ref(false)
 const settingsSaving = ref(false)
@@ -2063,18 +2347,36 @@ const settingsForm = reactive({
   allow_public_registration: true,
   maintenance_mode: false,
   announcement_banner: '',
+  terms_of_use_text: '',
+  privacy_policy_text: '',
 })
 
 const adminUsers = ref([])
 const usersLoading = ref(false)
 const usersSaving = ref(false)
+const usersRecovering = ref(false)
 const usersError = ref('')
 const usersMessage = ref('')
 const showUserModal = ref(false)
+const showRecoverUserModal = ref(false)
+const recoverTargetUser = ref(null)
 const userFilters = reactive({
   search: '',
   role: '',
   status: '',
+})
+const usersPagination = reactive({
+  current_page: 1,
+  last_page: 1,
+  per_page: USERS_DEFAULT_PAGE_SIZE,
+  total: 0,
+  from: 0,
+  to: 0,
+})
+const recoverForm = reactive({
+  student_id: '',
+  email: '',
+  password: '',
 })
 const userForm = reactive({
   id: null,
@@ -2095,15 +2397,21 @@ let examAttemptMobileMediaQuery
 let studentExamTimerInterval
 let studentExamSyncInterval
 let liveBoardRefreshInterval
+let usersFilterSearchDebounce
 let studentExamSyncing = false
 
 const normalizedRole = computed(() => String(auth.user?.role ?? 'student').toLowerCase())
-const isManagementRole = computed(() => ['admin', 'staff_master_examiner'].includes(normalizedRole.value))
 const isAdminRole = computed(() => normalizedRole.value === 'admin')
+const isStaffRole = computed(() => ['staff_master_examiner', 'faculty'].includes(normalizedRole.value))
+const isManagementRole = computed(() => isAdminRole.value || isStaffRole.value)
+const canCreateRooms = computed(() => isStaffRole.value)
+const canManageAssessmentContent = computed(() => isStaffRole.value)
+const canViewExamResults = computed(() => isStaffRole.value)
 const isRoomPage = computed(() => ['room', 'rooms'].includes(activeNav.value))
 
 const displayName = computed(() => auth.user?.name ?? 'User')
 const displayRole = computed(() => {
+  if (normalizedRole.value === 'faculty') return 'Faculty'
   if (normalizedRole.value === 'staff_master_examiner') return 'Staff / Master Examiner'
   if (normalizedRole.value === 'admin') return 'Administrator'
   return 'Student'
@@ -2131,10 +2439,7 @@ const staffNavItems = [
 
 const adminNavItems = [
   { key: 'users', label: 'Users', icon: UserRound },
-  { key: 'library', label: 'Library', icon: BookOpen },
   { key: 'room', label: 'Room', icon: DoorOpen },
-  { key: 'exams', label: 'Exams', icon: FileText },
-  { key: 'reports', label: 'Reports', icon: BarChart3 },
   { key: 'settings', label: 'Settings', icon: Settings },
   { key: 'audit', label: 'Audit', icon: ClipboardList },
 ]
@@ -2149,6 +2454,37 @@ const roomCollectionLabel = computed(() => {
   if (isManagementRole.value) return "Rooms you've added"
   return 'Rooms joined'
 })
+
+const canGoToPreviousUsersPage = computed(() => usersPagination.current_page > 1)
+const canGoToNextUsersPage = computed(() => usersPagination.current_page < usersPagination.last_page)
+const usersRangeLabel = computed(() => {
+  if (!Number.isFinite(usersPagination.total) || usersPagination.total < 1) {
+    return 'No users found'
+  }
+
+  const from = Number(usersPagination.from ?? 0)
+  const to = Number(usersPagination.to ?? 0)
+  const total = Number(usersPagination.total ?? 0)
+
+  return `Showing ${from}-${to} of ${total} users`
+})
+
+const reportExportRoomOptions = computed(() => {
+  const examId = Number(reportExportForm.exam_id)
+  if (!Number.isFinite(examId) || examId < 1) return []
+
+  return reportExportExams.value
+    .find((exam) => Number(exam.id) === examId)
+    ?.rooms ?? []
+})
+
+const canExportSessionReports = computed(() => (
+  Number(reportExportForm.exam_id) > 0 && Number(reportExportForm.room_id) > 0
+))
+
+const canExportSingleStudentReport = computed(() => (
+  canExportSessionReports.value && Number(reportExportForm.student_id) > 0
+))
 
 const {
   showLibraryQuestionModal,
@@ -2178,7 +2514,7 @@ const {
   handleSaveLibraryQuestionBank,
   handleDeleteLibraryBank,
 } = useLibraryManager({
-  canManageLibraries: isManagementRole,
+  canManageLibraries: canManageAssessmentContent,
   parseApiError: firstApiError,
   onBanksChanged: fetchExamQuestionBanks,
 })
@@ -2284,7 +2620,6 @@ const isLiveBoardTeacherPaced = computed(() => (
 ))
 
 watchEffect(() => {
-  if (hasForcedNav.value) return
   if (!navItems.value.some((item) => item.key === activeNav.value)) {
     activeNav.value = navItems.value[0]?.key ?? ''
   }
@@ -2294,7 +2629,10 @@ watch(
   () => props.forcedNav,
   (value) => {
     if (!hasForcedNav.value) return
-    activeNav.value = String(value ?? '').trim()
+
+    const requestedNav = String(value ?? '').trim()
+    const hasRequestedNav = navItems.value.some((item) => item.key === requestedNav)
+    activeNav.value = hasRequestedNav ? requestedNav : (navItems.value[0]?.key ?? '')
   },
   { immediate: true },
 )
@@ -2372,6 +2710,11 @@ onBeforeUnmount(() => {
   clearStudentExamTimer()
   stopStudentExamAutoSync()
   stopLiveBoardAutoRefresh()
+
+  if (usersFilterSearchDebounce) {
+    clearTimeout(usersFilterSearchDebounce)
+    usersFilterSearchDebounce = null
+  }
 
   if (mobileMediaQuery) {
     if (typeof mobileMediaQuery.removeEventListener === 'function') {
@@ -3154,47 +3497,32 @@ function closeUserModal() {
   resetUserForm()
 }
 
+function resetRecoverForm() {
+  recoverForm.student_id = ''
+  recoverForm.email = ''
+  recoverForm.password = ''
+}
+
+function openRecoverUserModal(user) {
+  if (String(user?.role ?? '').toLowerCase() !== 'student') return
+
+  recoverTargetUser.value = user
+  resetRecoverForm()
+  usersError.value = ''
+  usersMessage.value = ''
+  showRecoverUserModal.value = true
+}
+
+function closeRecoverUserModal() {
+  showRecoverUserModal.value = false
+  recoverTargetUser.value = null
+  resetRecoverForm()
+}
+
 const reportMetricCards = computed(() => {
-  if (!isManagementRole.value) return []
+  if (!isStaffRole.value) return []
 
   const data = reportMetrics.value ?? {}
-
-  if (isAdminRole.value) {
-    return [
-      {
-        label: 'Total Users',
-        value: data.total_users ?? 0,
-        trend: `${data.active_users ?? 0} active`,
-        positive: true,
-        tone: 'navy',
-        icon: UserRound,
-      },
-      {
-        label: 'Students',
-        value: data.students ?? 0,
-        trend: `${data.staff ?? 0} staff`,
-        positive: true,
-        tone: 'gold',
-        icon: ShieldCheck,
-      },
-      {
-        label: 'Rooms',
-        value: data.total_rooms ?? 0,
-        trend: `${data.exam_assignments ?? 0} assignments`,
-        positive: true,
-        tone: 'success',
-        icon: DoorOpen,
-      },
-      {
-        label: 'Exams',
-        value: data.total_exams ?? 0,
-        trend: `${data.inactive_users ?? 0} inactive users`,
-        positive: (data.inactive_users ?? 0) === 0,
-        tone: 'navy',
-        icon: FileText,
-      },
-    ]
-  }
 
   return [
     {
@@ -3217,6 +3545,7 @@ const reportMetricCards = computed(() => {
 })
 
 function openCreateRoomModal() {
+  if (!canCreateRooms.value) return
   roomName.value = ''
   showCreateRoomModal.value = true
 }
@@ -3337,6 +3666,7 @@ async function fetchRooms(preferredRoomId = null) {
 }
 
 async function handleCreateRoom() {
+  if (!canCreateRooms.value) return
   if (!roomName.value.trim()) return
 
   roomLoading.value = true
@@ -3469,6 +3799,11 @@ async function handleKickRoomMember(member) {
 }
 
 async function fetchManageableRooms() {
+  if (!canManageAssessmentContent.value) {
+    manageableRooms.value = []
+    return
+  }
+
   try {
     const { data } = await services.getRooms()
     manageableRooms.value = (data.rooms ?? []).map((room) => ({
@@ -3482,6 +3817,11 @@ async function fetchManageableRooms() {
 }
 
 async function fetchExamQuestionBanks() {
+  if (!canManageAssessmentContent.value) {
+    examQuestionBanks.value = []
+    return
+  }
+
   try {
     const { data } = await services.getLibraryBanks()
     examQuestionBanks.value = (data.banks ?? []).map((bank) => ({
@@ -3496,7 +3836,7 @@ async function fetchExamQuestionBanks() {
 }
 
 async function loadExams() {
-  if (!isManagementRole.value) return
+  if (!canManageAssessmentContent.value) return
 
   examLoading.value = true
   examError.value = ''
@@ -3634,6 +3974,8 @@ function startLiveBoardAutoRefresh() {
 }
 
 async function openRoomLiveBoard(exam) {
+  if (!canViewExamResults.value) return
+
   const roomId = Number(selectedRoom.value?.id ?? selectedRoomId.value)
   if (!Number.isFinite(roomId) || roomId < 1) {
     roomError.value = 'Select a room first before opening the live board.'
@@ -3668,6 +4010,8 @@ function closeRoomLiveBoard() {
 }
 
 async function loadLiveBoard(silent = false) {
+  if (!canViewExamResults.value) return
+
   const examId = liveBoardExam.value?.id
   const roomId = Number(liveBoardRoomId.value)
   if (!examId || !Number.isFinite(roomId) || roomId < 1) return
@@ -3713,6 +4057,8 @@ async function loadLiveBoard(silent = false) {
 }
 
 async function updateTeacherPacing(action) {
+  if (!canViewExamResults.value) return
+
   const examId = liveBoardExam.value?.id
   const roomId = Number(liveBoardRoomId.value)
   if (!examId || !Number.isFinite(roomId) || roomId < 1) return
@@ -3791,8 +4137,249 @@ function liveBoardItemSummaryText(item) {
   return `${Number(item.answered_percent)}%`
 }
 
+function extractDownloadFilename(contentDisposition, fallbackName) {
+  if (typeof contentDisposition !== 'string' || contentDisposition.trim() === '') {
+    return fallbackName
+  }
+
+  const utf8Match = contentDisposition.match(/filename\\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]).replace(/\"/g, '').trim()
+    } catch (error) {
+      // Fallback to plain filename parsing below.
+    }
+  }
+
+  const plainMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i)
+  if (plainMatch?.[1]) {
+    return plainMatch[1].trim()
+  }
+
+  return fallbackName
+}
+
+function saveDownloadedBlob(response, fallbackName) {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return
+
+  const blob = response?.data instanceof Blob
+    ? response.data
+    : new Blob([response?.data ?? ''])
+
+  const contentDisposition = response?.headers?.['content-disposition']
+  const filename = extractDownloadFilename(contentDisposition, fallbackName)
+
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
+
+async function resolveBlobApiError(error, fallbackMessage) {
+  const blobPayload = error?.response?.data
+  if (blobPayload instanceof Blob) {
+    try {
+      const text = await blobPayload.text()
+      const parsed = JSON.parse(text)
+      const message = String(parsed?.message ?? '').trim()
+      if (message) return message
+    } catch (parseError) {
+      // Ignore and fall back.
+    }
+  }
+
+  return firstApiError(error, fallbackMessage)
+}
+
+async function loadReportExportStudents() {
+  if (!Number(reportExportForm.room_id)) {
+    reportExportStudents.value = []
+    reportExportForm.student_id = ''
+    return
+  }
+
+  reportStudentsLoading.value = true
+
+  try {
+    const { data } = await services.getRoom(Number(reportExportForm.room_id))
+    reportExportStudents.value = (data?.members ?? [])
+      .filter((member) => String(member?.role ?? '') === 'student')
+      .map((member) => ({
+        id: Number(member.id),
+        name: member.name,
+        student_id: member.student_id,
+      }))
+
+    if (!reportExportStudents.value.some((student) => String(student.id) === String(reportExportForm.student_id))) {
+      reportExportForm.student_id = ''
+    }
+  } catch (error) {
+    reportExportStudents.value = []
+    reportExportForm.student_id = ''
+    reportExportError.value = firstApiError(error, 'Unable to load room students for individual reports.')
+  } finally {
+    reportStudentsLoading.value = false
+  }
+}
+
+async function loadReportExportTargets(preserveSelection = false) {
+  if (!isStaffRole.value) return
+
+  reportTargetsLoading.value = true
+  reportExportError.value = ''
+
+  try {
+    const { data } = await services.getExams()
+    reportExportExams.value = (data?.exams ?? []).map((exam) => ({
+      id: Number(exam.id),
+      title: exam.title,
+      rooms: (exam.rooms ?? []).map((room) => ({
+        id: Number(room.id),
+        name: room.name,
+        code: room.code,
+      })),
+    }))
+
+    const selectedExamStillValid = reportExportExams.value.some((exam) => String(exam.id) === String(reportExportForm.exam_id))
+    if (!preserveSelection || !selectedExamStillValid) {
+      reportExportForm.exam_id = reportExportExams.value[0] ? String(reportExportExams.value[0].id) : ''
+    }
+
+    const roomOptions = reportExportExams.value
+      .find((exam) => String(exam.id) === String(reportExportForm.exam_id))
+      ?.rooms ?? []
+
+    const selectedRoomStillValid = roomOptions.some((room) => String(room.id) === String(reportExportForm.room_id))
+    if (!preserveSelection || !selectedRoomStillValid) {
+      reportExportForm.room_id = roomOptions[0] ? String(roomOptions[0].id) : ''
+    }
+
+    if (!reportExportForm.room_id) {
+      reportExportStudents.value = []
+      reportExportForm.student_id = ''
+    }
+  } catch (error) {
+    reportExportExams.value = []
+    reportExportStudents.value = []
+    reportExportForm.exam_id = ''
+    reportExportForm.room_id = ''
+    reportExportForm.student_id = ''
+    reportExportError.value = firstApiError(error, 'Unable to load report export targets.')
+  } finally {
+    reportTargetsLoading.value = false
+  }
+}
+
+async function exportReport(type) {
+  if (!canExportSessionReports.value) {
+    reportExportError.value = 'Select an exam and room first.'
+    return
+  }
+
+  if (type === 'student_pdf' && !canExportSingleStudentReport.value) {
+    reportExportError.value = 'Select a student first for individual report export.'
+    return
+  }
+
+  reportExportingKey.value = type
+  reportExportError.value = ''
+  reportExportMessage.value = ''
+
+  const examId = Number(reportExportForm.exam_id)
+  const roomId = Number(reportExportForm.room_id)
+  const studentId = Number(reportExportForm.student_id)
+
+  const fallbackNameMap = {
+    xlsx: `complete-results-${examId}-${roomId}.xlsx`,
+    csv: `complete-results-${examId}-${roomId}.csv`,
+    summary_pdf: `results-summary-${examId}-${roomId}.pdf`,
+    answer_key_pdf: `answer-key-${examId}-${roomId}.pdf`,
+    student_pdf: `student-report-${examId}-${roomId}-${studentId}.pdf`,
+    student_zip: `student-reports-${examId}-${roomId}.zip`,
+  }
+
+  try {
+    let response
+    if (type === 'xlsx') {
+      response = await services.exportCompleteResultsXlsx(examId, roomId)
+    } else if (type === 'csv') {
+      response = await services.exportCompleteResultsCsv(examId, roomId)
+    } else if (type === 'summary_pdf') {
+      response = await services.exportResultsSummaryPdf(examId, roomId)
+    } else if (type === 'answer_key_pdf') {
+      response = await services.exportAnswerKeyPdf(examId, roomId)
+    } else if (type === 'student_pdf') {
+      response = await services.exportStudentReportPdf(examId, roomId, studentId)
+    } else if (type === 'student_zip') {
+      response = await services.exportStudentReportsZip(examId, roomId)
+    } else {
+      throw new Error('Unsupported report export type.')
+    }
+
+    saveDownloadedBlob(response, fallbackNameMap[type] ?? 'report-export')
+    reportExportMessage.value = 'Report export generated successfully.'
+  } catch (error) {
+    reportExportError.value = await resolveBlobApiError(error, 'Unable to export report.')
+  } finally {
+    reportExportingKey.value = ''
+  }
+}
+
+async function sendReportEmail(type) {
+  if (!canExportSessionReports.value) {
+    reportExportError.value = 'Select an exam and room first.'
+    return
+  }
+
+  if (type === 'student_email' && !canExportSingleStudentReport.value) {
+    reportExportError.value = 'Select a student first for individual report email.'
+    return
+  }
+
+  reportExportingKey.value = type
+  reportExportError.value = ''
+  reportExportMessage.value = ''
+
+  const examId = Number(reportExportForm.exam_id)
+  const roomId = Number(reportExportForm.room_id)
+  const studentId = Number(reportExportForm.student_id)
+  const payload = {
+    verified_only: Boolean(reportExportForm.verified_only),
+  }
+
+  try {
+    if (type === 'student_email') {
+      const { data } = await services.emailStudentReportPdf(examId, roomId, studentId, payload)
+      const studentName = String(data?.student?.name ?? 'Student')
+      const recipientEmail = String(data?.student?.email ?? '').trim()
+      reportExportMessage.value = recipientEmail
+        ? `Student report emailed to ${studentName} (${recipientEmail}).`
+        : 'Student report emailed successfully.'
+      return
+    }
+
+    if (type === 'student_email_bulk') {
+      const { data } = await services.emailStudentReportsBulk(examId, roomId, payload)
+      const sentCount = Number(data?.summary?.sent_count ?? 0)
+      const issueCount = Number(data?.summary?.issue_count ?? 0)
+      reportExportMessage.value = `Bulk email completed: ${sentCount} sent, ${issueCount} issues.`
+      return
+    }
+
+    throw new Error('Unsupported email action.')
+  } catch (error) {
+    reportExportError.value = firstApiError(error, 'Unable to send report email.')
+  } finally {
+    reportExportingKey.value = ''
+  }
+}
+
 async function loadReports() {
-  if (!isManagementRole.value) return
+  if (!isStaffRole.value) return
 
   reportLoading.value = true
   reportError.value = ''
@@ -3823,6 +4410,8 @@ async function loadSystemSettings() {
     settingsForm.allow_public_registration = Boolean(settings.allow_public_registration)
     settingsForm.maintenance_mode = Boolean(settings.maintenance_mode)
     settingsForm.announcement_banner = settings.announcement_banner ?? ''
+    settingsForm.terms_of_use_text = settings.terms_of_use_text ?? ''
+    settingsForm.privacy_policy_text = settings.privacy_policy_text ?? ''
   } catch (error) {
     settingsError.value = firstApiError(error, 'Unable to load system settings.')
   } finally {
@@ -3833,9 +4422,18 @@ async function loadSystemSettings() {
 async function saveSystemSettings() {
   if (!settingsCanEdit.value) return
 
-  settingsSaving.value = true
+  const termsOfUse = settingsForm.terms_of_use_text.trim()
+  const privacyPolicy = settingsForm.privacy_policy_text.trim()
+
   settingsError.value = ''
   settingsMessage.value = ''
+
+  if (!termsOfUse || !privacyPolicy) {
+    settingsError.value = 'Terms of Use and Privacy Policy are required.'
+    return
+  }
+
+  settingsSaving.value = true
 
   try {
     await services.saveSystemSettings({
@@ -3844,6 +4442,8 @@ async function saveSystemSettings() {
       allow_public_registration: settingsForm.allow_public_registration,
       maintenance_mode: settingsForm.maintenance_mode,
       announcement_banner: settingsForm.announcement_banner.trim(),
+      terms_of_use_text: termsOfUse,
+      privacy_policy_text: privacyPolicy,
     })
     settingsMessage.value = 'System settings updated.'
   } catch (error) {
@@ -3853,7 +4453,7 @@ async function saveSystemSettings() {
   }
 }
 
-async function loadAdminUsers() {
+async function loadAdminUsers(options = {}) {
   if (!isAdminRole.value) return
 
   usersLoading.value = true
@@ -3861,13 +4461,36 @@ async function loadAdminUsers() {
   usersMessage.value = ''
 
   try {
-    const params = {}
+    const requestedPage = Number(options.page ?? usersPagination.current_page ?? 1)
+    const normalizedPage = Number.isFinite(requestedPage) && requestedPage > 0
+      ? Math.trunc(requestedPage)
+      : 1
+
+    const params = {
+      page: normalizedPage,
+      per_page: usersPagination.per_page || USERS_DEFAULT_PAGE_SIZE,
+    }
     if (userFilters.search.trim()) params.search = userFilters.search.trim()
     if (userFilters.role) params.role = userFilters.role
     if (userFilters.status) params.status = userFilters.status
 
     const { data } = await services.getUsers(params)
     adminUsers.value = data.users ?? []
+
+    const meta = data?.meta ?? {}
+    const currentPage = Number(meta.current_page ?? normalizedPage)
+    const lastPage = Number(meta.last_page ?? 1)
+    const perPage = Number(meta.per_page ?? params.per_page)
+    const total = Number(meta.total ?? adminUsers.value.length)
+    const fallbackFrom = total > 0 ? ((currentPage - 1) * perPage) + 1 : 0
+    const fallbackTo = total > 0 ? Math.min(currentPage * perPage, total) : 0
+
+    usersPagination.current_page = currentPage > 0 ? currentPage : normalizedPage
+    usersPagination.last_page = lastPage > 0 ? lastPage : 1
+    usersPagination.per_page = perPage > 0 ? perPage : USERS_DEFAULT_PAGE_SIZE
+    usersPagination.total = Number.isFinite(total) && total >= 0 ? total : adminUsers.value.length
+    usersPagination.from = Number(meta.from ?? fallbackFrom)
+    usersPagination.to = Number(meta.to ?? fallbackTo)
   } catch (error) {
     usersError.value = firstApiError(error, 'Unable to load users.')
   } finally {
@@ -3915,11 +4538,45 @@ async function handleSaveUser() {
     }
 
     closeUserModal()
-    await loadAdminUsers()
+    await loadAdminUsers({ page: usersPagination.current_page })
   } catch (error) {
     usersError.value = firstApiError(error, 'Unable to save user.')
   } finally {
     usersSaving.value = false
+  }
+}
+
+async function handleRecoverUserAccount() {
+  if (!isAdminRole.value) return
+
+  const targetUserId = Number(recoverTargetUser.value?.id ?? 0)
+  if (!Number.isFinite(targetUserId) || targetUserId < 1) return
+
+  if (!/^\d{7,20}$/.test(recoverForm.student_id.trim())) {
+    usersError.value = 'Student ID must be 7 to 20 digits.'
+    return
+  }
+
+  if (!recoverForm.email.trim() || recoverForm.password.length < 8) return
+
+  usersRecovering.value = true
+  usersError.value = ''
+  usersMessage.value = ''
+
+  try {
+    const { data } = await services.recoverUserAccount(targetUserId, {
+      student_id: recoverForm.student_id.trim(),
+      email: recoverForm.email.trim(),
+      password: recoverForm.password,
+    })
+
+    usersMessage.value = data?.message ?? 'Student account recovered successfully.'
+    closeRecoverUserModal()
+    await loadAdminUsers({ page: usersPagination.current_page })
+  } catch (error) {
+    usersError.value = firstApiError(error, 'Unable to recover the student account.')
+  } finally {
+    usersRecovering.value = false
   }
 }
 
@@ -3938,6 +4595,54 @@ async function loadAuditLogs() {
     auditLoading.value = false
   }
 }
+
+watch(
+  () => [userFilters.role, userFilters.status],
+  async () => {
+    if (!isAdminRole.value || activeNav.value !== 'users') return
+    await loadAdminUsers({ page: 1 })
+  },
+)
+
+watch(
+  () => userFilters.search,
+  (value, previousValue) => {
+    if (!isAdminRole.value || activeNav.value !== 'users') return
+    if (String(value ?? '') === String(previousValue ?? '')) return
+
+    if (usersFilterSearchDebounce) {
+      clearTimeout(usersFilterSearchDebounce)
+      usersFilterSearchDebounce = null
+    }
+
+    usersFilterSearchDebounce = setTimeout(() => {
+      if (!isAdminRole.value || activeNav.value !== 'users') return
+      loadAdminUsers({ page: 1 })
+    }, 300)
+  },
+)
+
+watch(
+  () => reportExportForm.exam_id,
+  () => {
+    reportExportForm.room_id = ''
+    reportExportForm.student_id = ''
+    reportExportStudents.value = []
+    reportExportError.value = ''
+    reportExportMessage.value = ''
+  },
+)
+
+watch(
+  () => reportExportForm.room_id,
+  async (roomId, previousRoomId) => {
+    if (String(roomId ?? '') === String(previousRoomId ?? '')) return
+    reportExportForm.student_id = ''
+    reportExportError.value = ''
+    reportExportMessage.value = ''
+    await loadReportExportStudents()
+  },
+)
 
 watch(
   () => currentStudentExamQuestion.value?.question_id,
@@ -3986,6 +4691,7 @@ watch(
 
     if (value !== 'users') {
       closeUserModal()
+      closeRecoverUserModal()
     }
 
     if (value !== 'room') {
@@ -4031,7 +4737,10 @@ watch(
     }
 
     if (value === 'reports') {
-      await loadReports()
+      await Promise.all([
+        loadReports(),
+        loadReportExportTargets(true),
+      ])
       return
     }
 
@@ -4041,7 +4750,7 @@ watch(
     }
 
     if (value === 'users') {
-      await loadAdminUsers()
+      await loadAdminUsers({ page: usersPagination.current_page })
       return
     }
 

@@ -31,19 +31,49 @@
         <div v-if="apiError" class="alert alert-danger">{{ apiError }}</div>
 
         <form class="auth-form" @submit.prevent="handleSubmit">
-          <label class="field-group">
-            <span class="field-label">Full name</span>
-            <div class="field-wrap">
-              <UserRound :size="17" class="field-icon" />
-              <input
-                v-model="form.name"
-                type="text"
-                class="field-input"
-                placeholder="e.g. Juan dela Cruz"
-                autocomplete="name"
-              />
-            </div>
-          </label>
+          <div class="field-grid field-grid-three">
+            <label class="field-group">
+              <span class="field-label">First name</span>
+              <div class="field-wrap">
+                <UserRound :size="17" class="field-icon" />
+                <input
+                  v-model="form.first_name"
+                  type="text"
+                  class="field-input"
+                  placeholder="e.g. Juan"
+                  autocomplete="given-name"
+                />
+              </div>
+            </label>
+
+            <label class="field-group">
+              <span class="field-label">Middle name (optional)</span>
+              <div class="field-wrap">
+                <UserRound :size="17" class="field-icon" />
+                <input
+                  v-model="form.middle_name"
+                  type="text"
+                  class="field-input"
+                  placeholder="e.g. Santos"
+                  autocomplete="additional-name"
+                />
+              </div>
+            </label>
+
+            <label class="field-group">
+              <span class="field-label">Last name</span>
+              <div class="field-wrap">
+                <UserRound :size="17" class="field-icon" />
+                <input
+                  v-model="form.last_name"
+                  type="text"
+                  class="field-input"
+                  placeholder="e.g. Dela Cruz"
+                  autocomplete="family-name"
+                />
+              </div>
+            </label>
+          </div>
 
           <label class="field-group">
             <span class="field-label">Student ID</span>
@@ -118,15 +148,32 @@
             <span class="pw-label" :style="{ color: pwStrength.color }">{{ pwStrength.label }}</span>
           </div>
 
-          <label class="terms-wrap">
-            <input type="checkbox" v-model="form.agreed" />
-            <span>
-              I agree to the
-              <a href="#" class="inline-link">Terms of Use</a>
-              and
-              <a href="#" class="inline-link">Privacy Policy</a>
-            </span>
-          </label>
+          <div class="terms-section">
+            <div class="policy-links">
+              <button
+                type="button"
+                class="policy-link-btn"
+                :class="{ 'policy-link-btn-read': termsRead }"
+                @click="openPolicyModal('terms')"
+              >
+                {{ termsRead ? 'Terms of Use (Read)' : 'Open Terms of Use' }}
+              </button>
+              <button
+                type="button"
+                class="policy-link-btn"
+                :class="{ 'policy-link-btn-read': privacyRead }"
+                @click="openPolicyModal('privacy')"
+              >
+                {{ privacyRead ? 'Privacy Policy (Read)' : 'Open Privacy Policy' }}
+              </button>
+            </div>
+
+            <label class="terms-wrap">
+              <input type="checkbox" v-model="form.agreed" :disabled="!canAgree" />
+              <span>I have read and agree to the Terms of Use and Privacy Policy.</span>
+            </label>
+            <span v-if="!canAgree" class="terms-helper">Open and read both documents before agreeing.</span>
+          </div>
 
           <button type="submit" class="submit-btn" :disabled="isLoading">
             <span v-if="!isLoading">Create Account</span>
@@ -140,12 +187,57 @@
         </p>
       </section>
     </main>
+
+    <div
+      v-if="activePolicy"
+      class="policy-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="activePolicyTitle"
+      @click.self="closePolicyModal"
+    >
+      <section class="policy-modal">
+        <header class="policy-modal-header">
+          <h3>{{ activePolicyTitle }}</h3>
+          <button type="button" class="policy-close-btn" @click="closePolicyModal">Close</button>
+        </header>
+
+        <div ref="policyBodyRef" class="policy-modal-body" @scroll="handlePolicyScroll">
+          <p class="policy-updated">{{ legalUpdatedLabel }}</p>
+          <p v-if="legalLoading" class="policy-loading">Loading latest policy content...</p>
+          <p v-else-if="legalError" class="policy-warning">{{ legalError }}</p>
+          <article class="policy-article">
+            <h4>{{ activePolicyTitle }}</h4>
+            <p class="policy-body-text">{{ activePolicyContent }}</p>
+          </article>
+        </div>
+
+        <footer class="policy-modal-footer">
+          <span class="policy-scroll-note">
+            {{
+              policyReadyToConfirm
+                ? 'You reached the end of this document.'
+                : 'Scroll to the bottom to mark as read.'
+            }}
+          </span>
+          <button
+            type="button"
+            class="submit-btn policy-mark-btn"
+            :disabled="!policyReadyToConfirm || legalLoading"
+            @click="markPolicyAsRead"
+          >
+            Mark as Read
+          </button>
+        </footer>
+      </section>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { settingsApi } from '@/api/settings.api'
 import { useAuthStore } from '@/store/auth.store'
 import {
   BarChart3,
@@ -161,7 +253,9 @@ import {
 } from 'lucide-vue-next'
 
 const form = reactive({
-  name: '',
+  first_name: '',
+  middle_name: '',
+  last_name: '',
   student_id: '',
   email: '',
   password: '',
@@ -172,6 +266,14 @@ const form = reactive({
 const showPw = ref(false)
 const isLoading = ref(false)
 const apiError = ref('')
+const activePolicy = ref('')
+const policyBodyRef = ref(null)
+const policyReadyToConfirm = ref(false)
+const termsRead = ref(false)
+const privacyRead = ref(false)
+const legalLoading = ref(false)
+const legalError = ref('')
+const legalUpdatedAt = ref('')
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -182,9 +284,67 @@ const highlights = [
   { icon: ShieldCheck, text: 'Role-based access for each account' },
 ]
 
+const defaultTermsOfUseText = `1. Acceptable Use
+Use the platform only for official academic review and examination activities. Sharing accounts, impersonating users, or attempting to bypass exam controls is prohibited.
+
+2. Account Responsibility
+You are responsible for keeping your credentials secure. Actions performed using your account are treated as your own unless officially reported as compromised.
+
+3. Academic Integrity
+Cheating, unauthorized collaboration, copying exam content, or distributing question material may result in account suspension and disciplinary action.
+
+4. Availability and Changes
+System features may be updated or temporarily unavailable for maintenance. Administrators may enforce policy updates to keep the platform compliant and secure.
+
+5. Enforcement
+Violations can lead to investigation, removal of access, and formal reporting to relevant academic authorities.`
+
+const defaultPrivacyPolicyText = `1. Data We Collect
+The platform stores identity details (name, student ID, email), role information, room enrollments, and exam performance records required for academic operations.
+
+2. How Data Is Used
+Collected data is used to authenticate users, manage rooms and exams, generate reports, and maintain audit logs for security and accountability.
+
+3. Data Access
+Access to personal and exam-related data is role-based. Authorized staff and administrators can access only the data needed for their responsibilities.
+
+4. Data Retention
+Records are retained based on institutional requirements for academic continuity, reporting, and account recovery workflows.
+
+5. Security and Contact
+Reasonable safeguards are applied to protect stored data. Report privacy concerns or account issues to the institution administrators for assistance.`
+
+const legalTexts = reactive({
+  terms_of_use_text: defaultTermsOfUseText,
+  privacy_policy_text: defaultPrivacyPolicyText,
+})
+
 const pwMismatch = computed(() =>
   form.password_confirmation.length > 0 && form.password !== form.password_confirmation,
 )
+const canAgree = computed(() => termsRead.value && privacyRead.value)
+const activePolicyTitle = computed(() => (activePolicy.value === 'terms' ? 'Terms of Use' : 'Privacy Policy'))
+const activePolicyContent = computed(() =>
+  activePolicy.value === 'terms'
+    ? legalTexts.terms_of_use_text
+    : legalTexts.privacy_policy_text,
+)
+const legalUpdatedLabel = computed(() => {
+  if (!legalUpdatedAt.value) {
+    return 'Last updated: March 5, 2026'
+  }
+
+  const parsed = new Date(legalUpdatedAt.value)
+  if (Number.isNaN(parsed.getTime())) {
+    return 'Last updated: March 5, 2026'
+  }
+
+  return `Last updated: ${parsed.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })}`
+})
 
 const pwStrength = computed(() => {
   const pw = form.password
@@ -194,15 +354,96 @@ const pwStrength = computed(() => {
   return { pct: 75, color: 'var(--lnu-gold)', label: 'Good' }
 })
 
+function updatePolicyReadiness() {
+  if (legalLoading.value) {
+    policyReadyToConfirm.value = false
+    return
+  }
+
+  const bodyEl = policyBodyRef.value
+  if (!bodyEl) return
+
+  const scrollBottom = bodyEl.scrollTop + bodyEl.clientHeight
+  policyReadyToConfirm.value = scrollBottom >= bodyEl.scrollHeight - 8
+}
+
+async function openPolicyModal(type) {
+  activePolicy.value = type
+  policyReadyToConfirm.value = false
+
+  await nextTick()
+  if (!policyBodyRef.value) return
+
+  policyBodyRef.value.scrollTop = 0
+  updatePolicyReadiness()
+}
+
+function closePolicyModal() {
+  activePolicy.value = ''
+  policyReadyToConfirm.value = false
+}
+
+function handlePolicyScroll() {
+  updatePolicyReadiness()
+}
+
+function markPolicyAsRead() {
+  if (!policyReadyToConfirm.value) return
+
+  if (activePolicy.value === 'terms') {
+    termsRead.value = true
+  }
+
+  if (activePolicy.value === 'privacy') {
+    privacyRead.value = true
+  }
+
+  closePolicyModal()
+}
+
+async function loadPublicLegalSettings() {
+  legalLoading.value = true
+  legalError.value = ''
+
+  try {
+    const { data } = await settingsApi.getPublicLegal()
+    const settings = data?.settings ?? {}
+
+    legalTexts.terms_of_use_text = String(settings.terms_of_use_text || defaultTermsOfUseText)
+    legalTexts.privacy_policy_text = String(settings.privacy_policy_text || defaultPrivacyPolicyText)
+    legalUpdatedAt.value = String(data?.last_updated_at ?? '')
+  } catch (error) {
+    legalTexts.terms_of_use_text = defaultTermsOfUseText
+    legalTexts.privacy_policy_text = defaultPrivacyPolicyText
+    legalUpdatedAt.value = ''
+    legalError.value = 'Unable to load latest policy text. Showing default content.'
+  } finally {
+    legalLoading.value = false
+    if (activePolicy.value) {
+      await nextTick()
+      updatePolicyReadiness()
+    }
+  }
+}
+
+onMounted(() => {
+  loadPublicLegalSettings()
+})
+
 async function handleSubmit() {
   apiError.value = ''
+  const firstName = form.first_name.trim()
+  const middleName = form.middle_name.trim()
+  const lastName = form.last_name.trim()
+  const studentId = form.student_id.trim()
+  const email = form.email.trim()
 
-  if (!form.name || !form.student_id || !form.email || !form.password || !form.password_confirmation) {
+  if (!firstName || !lastName || !studentId || !email || !form.password || !form.password_confirmation) {
     apiError.value = 'Please complete all required fields.'
     return
   }
 
-  if (!/^\d{7,20}$/.test(form.student_id.trim())) {
+  if (!/^\d{7,20}$/.test(studentId)) {
     apiError.value = 'Student ID must be 7 to 20 digits.'
     return
   }
@@ -212,19 +453,27 @@ async function handleSubmit() {
     return
   }
 
+  if (!canAgree.value) {
+    apiError.value = 'Please open and read the Terms of Use and Privacy Policy first.'
+    return
+  }
+
   if (!form.agreed) {
-    apiError.value = 'Please agree to the Terms of Use.'
+    apiError.value = 'Please confirm your agreement to the Terms of Use and Privacy Policy.'
     return
   }
 
   isLoading.value = true
   try {
     await auth.register(
-      form.name,
-      form.student_id.trim(),
-      form.email,
+      firstName,
+      middleName,
+      lastName,
+      studentId,
+      email,
       form.password,
       form.password_confirmation,
+      form.agreed,
     )
     await router.push('/dashboard')
   } catch (error) {
@@ -385,6 +634,10 @@ async function handleSubmit() {
   gap: 14px;
 }
 
+.field-grid-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .field-group {
   display: grid;
   gap: 8px;
@@ -517,6 +770,49 @@ async function handleSubmit() {
   accent-color: var(--lnu-navy);
 }
 
+.terms-wrap input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.terms-section {
+  display: grid;
+  gap: 10px;
+}
+
+.policy-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.policy-link-btn {
+  border: 1px solid rgba(13, 21, 71, 0.25);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--lnu-navy);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.policy-link-btn:hover {
+  border-color: var(--lnu-navy);
+  background: rgba(26, 35, 126, 0.06);
+}
+
+.policy-link-btn-read {
+  border-color: rgba(46, 125, 50, 0.35);
+  color: var(--lnu-success);
+  background: rgba(46, 125, 50, 0.08);
+}
+
+.terms-helper {
+  font-size: 13px;
+  color: var(--lnu-text-muted);
+}
+
 .inline-link {
   color: var(--lnu-navy-light);
   text-decoration: none;
@@ -571,6 +867,116 @@ async function handleSubmit() {
   font-size: 15px;
 }
 
+.policy-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(10, 18, 56, 0.58);
+  padding: 20px;
+}
+
+.policy-modal {
+  width: min(780px, 100%);
+  max-height: min(640px, 90vh);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 21, 71, 0.22);
+  overflow: hidden;
+}
+
+.policy-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(13, 21, 71, 0.12);
+}
+
+.policy-modal-header h3 {
+  margin: 0;
+  color: var(--lnu-text);
+}
+
+.policy-close-btn {
+  border: 1px solid rgba(13, 21, 71, 0.2);
+  background: #fff;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lnu-navy);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.policy-close-btn:hover {
+  border-color: var(--lnu-navy);
+}
+
+.policy-modal-body {
+  overflow: auto;
+  padding: 16px 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.policy-updated {
+  margin: 0;
+  font-size: 13px;
+  color: var(--lnu-text-muted);
+}
+
+.policy-loading {
+  margin: 0;
+  font-size: 13px;
+  color: var(--lnu-text-muted);
+}
+
+.policy-warning {
+  margin: 0;
+  font-size: 13px;
+  color: var(--lnu-danger);
+}
+
+.policy-article h4 {
+  margin: 0 0 6px;
+  color: var(--lnu-text);
+  font-size: 15px;
+}
+
+.policy-body-text {
+  margin: 0;
+  color: var(--lnu-text-muted);
+  line-height: 1.52;
+  font-size: 14px;
+  white-space: pre-line;
+}
+
+.policy-modal-footer {
+  border-top: 1px solid rgba(13, 21, 71, 0.12);
+  padding: 14px 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.policy-scroll-note {
+  font-size: 13px;
+  color: var(--lnu-text-muted);
+}
+
+.policy-mark-btn {
+  min-width: 132px;
+  height: 38px;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -596,6 +1002,18 @@ async function handleSubmit() {
 
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .policy-modal-backdrop {
+    padding: 12px;
+  }
+
+  .policy-modal-footer {
+    align-items: stretch;
+  }
+
+  .policy-mark-btn {
+    width: 100%;
   }
 }
 </style>

@@ -1924,6 +1924,11 @@
   gap: 10px;
 }
 
+.report-export-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
 .library-modal-head {
   position: sticky;
   top: 0;
@@ -2195,6 +2200,16 @@
   gap: 10px;
   flex-wrap: wrap;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(249, 248, 244, 0.92));
+}
+
+.users-pagination {
+  border-top: 1px solid rgba(13, 21, 71, 0.12);
+  border-bottom: 0;
+  justify-content: space-between;
+}
+
+.users-pagination p {
+  margin: 0;
 }
 
 .management-list {
