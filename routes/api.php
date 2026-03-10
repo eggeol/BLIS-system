@@ -268,11 +268,13 @@ Route::post('/auth/register', function (Request $request) use ($recordAudit, $au
 
 Route::post('/auth/login', function (Request $request) use ($authTokenCookieService) {
     $validated = $request->validate([
-        'email' => ['required', 'email'],
+        'identifier' => ['required', 'string'],
         'password' => ['required'],
     ]);
 
-    $user = User::where('email', $validated['email'])->first();
+    $user = User::where('email', $validated['identifier'])
+        ->orWhere('student_id', $validated['identifier'])
+        ->first();
 
     if (!$user || !Hash::check($validated['password'], $user->password)) {
         return response()->json(['message' => 'Invalid credentials'], 401);

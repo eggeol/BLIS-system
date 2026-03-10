@@ -32,15 +32,15 @@
 
         <form class="auth-form" @submit.prevent="handleSubmit">
           <label class="field-group">
-            <span class="field-label">Email address</span>
+            <span class="field-label">Email or Student ID</span>
             <div class="field-wrap">
-              <Mail :size="17" class="field-icon" />
+              <UserRound :size="17" class="field-icon" />
               <input
-                v-model="form.email"
-                type="email"
+                v-model="form.identifier"
+                type="text"
                 class="field-input"
-                placeholder="you@lnu.edu.ph"
-                autocomplete="email"
+                placeholder="e.g. you@lnu.edu.ph or 1234567"
+                autocomplete="username"
               />
             </div>
           </label>
@@ -99,9 +99,10 @@ import {
   LockKeyhole,
   Mail,
   ShieldCheck,
+  UserRound,
 } from 'lucide-vue-next'
 
-const form = reactive({ email: '', password: '', remember: false })
+const form = reactive({ identifier: '', password: '', remember: false })
 const showPw = ref(false)
 const isLoading = ref(false)
 const apiError = ref('')
@@ -118,17 +119,17 @@ const highlights = [
 async function handleSubmit() {
   apiError.value = ''
 
-  if (!form.email || !form.password) {
-    apiError.value = 'Email and password are required.'
+  if (!form.identifier || !form.password) {
+    apiError.value = 'Email or Student ID and password are required.'
     return
   }
 
   isLoading.value = true
   try {
-    await auth.login(form.email, form.password)
+    await auth.login(form.identifier, form.password)
     await router.push('/dashboard')
   } catch (error) {
-    apiError.value = error.response?.data?.message ?? 'Invalid email or password. Please try again.'
+    apiError.value = error.response?.data?.message ?? 'Invalid credentials. Please try again.'
   } finally {
     isLoading.value = false
   }

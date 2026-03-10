@@ -31,49 +31,47 @@
         <div v-if="apiError" class="alert alert-danger">{{ apiError }}</div>
 
         <form class="auth-form" @submit.prevent="handleSubmit">
-          <div class="field-grid field-grid-three">
-            <label class="field-group">
-              <span class="field-label">First name</span>
-              <div class="field-wrap">
-                <UserRound :size="17" class="field-icon" />
-                <input
-                  v-model="form.first_name"
-                  type="text"
-                  class="field-input"
-                  placeholder="e.g. Juan"
-                  autocomplete="given-name"
-                />
-              </div>
-            </label>
+          <label class="field-group">
+            <span class="field-label">First name</span>
+            <div class="field-wrap">
+              <UserRound :size="17" class="field-icon" />
+              <input
+                v-model="form.first_name"
+                type="text"
+                class="field-input"
+                placeholder="e.g. Juan"
+                autocomplete="given-name"
+              />
+            </div>
+          </label>
 
-            <label class="field-group">
-              <span class="field-label">Middle name (optional)</span>
-              <div class="field-wrap">
-                <UserRound :size="17" class="field-icon" />
-                <input
-                  v-model="form.middle_name"
-                  type="text"
-                  class="field-input"
-                  placeholder="e.g. Santos"
-                  autocomplete="additional-name"
-                />
-              </div>
-            </label>
+          <label class="field-group">
+            <span class="field-label">Middle name (optional)</span>
+            <div class="field-wrap">
+              <UserRound :size="17" class="field-icon" />
+              <input
+                v-model="form.middle_name"
+                type="text"
+                class="field-input"
+                placeholder="e.g. Santos"
+                autocomplete="additional-name"
+              />
+            </div>
+          </label>
 
-            <label class="field-group">
-              <span class="field-label">Last name</span>
-              <div class="field-wrap">
-                <UserRound :size="17" class="field-icon" />
-                <input
-                  v-model="form.last_name"
-                  type="text"
-                  class="field-input"
-                  placeholder="e.g. Dela Cruz"
-                  autocomplete="family-name"
-                />
-              </div>
-            </label>
-          </div>
+          <label class="field-group">
+            <span class="field-label">Last name</span>
+            <div class="field-wrap">
+              <UserRound :size="17" class="field-icon" />
+              <input
+                v-model="form.last_name"
+                type="text"
+                class="field-input"
+                placeholder="e.g. Dela Cruz"
+                autocomplete="family-name"
+              />
+            </div>
+          </label>
 
           <label class="field-group">
             <span class="field-label">Student ID</span>
@@ -149,28 +147,26 @@
           </div>
 
           <div class="terms-section">
-            <div class="policy-links">
-              <button
-                type="button"
-                class="policy-link-btn"
-                :class="{ 'policy-link-btn-read': termsRead }"
-                @click="openPolicyModal('terms')"
-              >
-                {{ termsRead ? 'Terms of Use (Read)' : 'Open Terms of Use' }}
-              </button>
-              <button
-                type="button"
-                class="policy-link-btn"
-                :class="{ 'policy-link-btn-read': privacyRead }"
-                @click="openPolicyModal('privacy')"
-              >
-                {{ privacyRead ? 'Privacy Policy (Read)' : 'Open Privacy Policy' }}
-              </button>
-            </div>
-
             <label class="terms-wrap">
               <input type="checkbox" v-model="form.agreed" :disabled="!canAgree" />
-              <span>I have read and agree to the Terms of Use and Privacy Policy.</span>
+              <span>
+                I agree to the
+                <a
+                  href="#"
+                  class="inline-link strong"
+                  :style="termsRead ? 'color: var(--lnu-success)' : ''"
+                  @click.prevent="openPolicyModal('terms')"
+                  >Terms of Service</a
+                >
+                and
+                <a
+                  href="#"
+                  class="inline-link strong"
+                  :style="privacyRead ? 'color: var(--lnu-success)' : ''"
+                  @click.prevent="openPolicyModal('privacy')"
+                  >Privacy Policy</a
+                >.
+              </span>
             </label>
             <span v-if="!canAgree" class="terms-helper">Open and read both documents before agreeing.</span>
           </div>
@@ -323,7 +319,7 @@ const pwMismatch = computed(() =>
   form.password_confirmation.length > 0 && form.password !== form.password_confirmation,
 )
 const canAgree = computed(() => termsRead.value && privacyRead.value)
-const activePolicyTitle = computed(() => (activePolicy.value === 'terms' ? 'Terms of Use' : 'Privacy Policy'))
+const activePolicyTitle = computed(() => (activePolicy.value === 'terms' ? 'Terms of Service' : 'Privacy Policy'))
 const activePolicyContent = computed(() =>
   activePolicy.value === 'terms'
     ? legalTexts.terms_of_use_text
@@ -454,12 +450,12 @@ async function handleSubmit() {
   }
 
   if (!canAgree.value) {
-    apiError.value = 'Please open and read the Terms of Use and Privacy Policy first.'
+    apiError.value = 'Please open and read the Terms of Service and Privacy Policy first.'
     return
   }
 
   if (!form.agreed) {
-    apiError.value = 'Please confirm your agreement to the Terms of Use and Privacy Policy.'
+    apiError.value = 'Please confirm your agreement to the Terms of Service and Privacy Policy.'
     return
   }
 
@@ -632,10 +628,7 @@ async function handleSubmit() {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
-}
-
-.field-grid-three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
 }
 
 .field-group {
@@ -778,34 +771,6 @@ async function handleSubmit() {
 .terms-section {
   display: grid;
   gap: 10px;
-}
-
-.policy-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.policy-link-btn {
-  border: 1px solid rgba(13, 21, 71, 0.25);
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--lnu-navy);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 600;
-  padding: 7px 10px;
-  cursor: pointer;
-}
-
-.policy-link-btn:hover {
-  border-color: var(--lnu-navy);
-  background: rgba(26, 35, 126, 0.06);
-}
-
-.policy-link-btn-read {
-  border-color: rgba(46, 125, 50, 0.35);
-  color: var(--lnu-success);
-  background: rgba(46, 125, 50, 0.08);
 }
 
 .terms-helper {
