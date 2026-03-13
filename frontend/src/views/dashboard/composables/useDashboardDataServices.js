@@ -31,7 +31,6 @@ export function useDashboardDataServices() {
     updateExam: (examId, payload) => examsApi.update(examId, payload),
     deleteExam: (examId) => examsApi.remove(examId),
     getLiveBoard: (examId, roomId) => examsApi.liveBoard(examId, roomId),
-    updateTeacherPacing: (examId, payload) => examsApi.updateTeacherPacing(examId, payload),
 
     getReportsOverview: () => reportsApi.overview(),
     exportCompleteResultsXlsx: (examId, roomId) => reportsApi.completeResultsXlsx(examId, roomId),

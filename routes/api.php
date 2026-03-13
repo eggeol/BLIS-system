@@ -177,20 +177,6 @@ $normalizeDeliveryMode = static function (?string $mode) use ($deliveryModeServi
     return $deliveryModeService->normalize($mode);
 };
 
-$deliveryModeValidationModes = $deliveryModeService->validationModes();
-
-$resolveTeacherPacedTotalItems = static function (Exam $exam) use ($deliveryModeService): int {
-    return $deliveryModeService->resolveTeacherPacedTotalItems($exam);
-};
-
-$resolveTeacherPacingState = static function (int $examId, int $roomId) use ($deliveryModeService): ?array {
-    return $deliveryModeService->resolveTeacherPacingState($examId, $roomId);
-};
-
-$buildTeacherPacingPayload = static function (?array $state, int $totalItems) use ($deliveryModeService): ?array {
-    return $deliveryModeService->buildTeacherPacingPayload($state, $totalItems);
-};
-
 $refreshAttemptMetrics = static function (ExamAttempt $attempt, bool $finalize = false) use ($examAttemptService): ExamAttempt {
     return $examAttemptService->refreshMetrics($attempt, $finalize);
 };
@@ -329,10 +315,6 @@ Route::middleware('auth:sanctum')->group(function () use (
     $findAccessibleQuestionBank,
     $normalizeAnswerText,
     $normalizeDeliveryMode,
-    $deliveryModeValidationModes,
-    $resolveTeacherPacedTotalItems,
-    $resolveTeacherPacingState,
-    $buildTeacherPacingPayload,
     $refreshAttemptMetrics,
     $autoSubmitExpiredAttempt,
     $buildAttemptPayload,
@@ -1130,8 +1112,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $ensureActive,
         $recordAudit,
         $findAccessibleQuestionBank,
-        $normalizeDeliveryMode,
-        $deliveryModeValidationModes
+        $normalizeDeliveryMode
     ) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
@@ -1152,14 +1133,13 @@ Route::middleware('auth:sanctum')->group(function () use (
             'scheduled_at' => ['nullable', 'date'],
             'schedule_start_at' => ['nullable', 'date'],
             'schedule_end_at' => ['nullable', 'date'],
-            'delivery_mode' => ['nullable', Rule::in($deliveryModeValidationModes)],
             'one_take_only' => ['nullable', 'boolean'],
             'shuffle_questions' => ['nullable', 'boolean'],
             'room_ids' => ['nullable', 'array'],
             'room_ids.*' => ['integer', 'exists:rooms,id'],
         ]);
 
-        $deliveryMode = $normalizeDeliveryMode($validated['delivery_mode'] ?? null);
+        $deliveryMode = Exam::DELIVERY_MODE_OPEN_NAVIGATION;
         $scheduleStartAt = $validated['schedule_start_at'] ?? $validated['scheduled_at'] ?? null;
         $scheduleEndAt = $validated['schedule_end_at'] ?? null;
 
@@ -1203,9 +1183,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             'schedule_end_at' => $scheduleEndAt,
             'delivery_mode' => $deliveryMode,
             'one_take_only' => (bool) ($validated['one_take_only'] ?? false),
-            'shuffle_questions' => $deliveryMode === Exam::DELIVERY_MODE_TEACHER_PACED
-                ? false
-                : (bool) ($validated['shuffle_questions'] ?? false),
+            'shuffle_questions' => (bool) ($validated['shuffle_questions'] ?? false),
             'created_by' => $user->id,
         ]);
 
@@ -1270,8 +1248,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $ensureActive,
         $recordAudit,
         $findAccessibleQuestionBank,
-        $normalizeDeliveryMode,
-        $deliveryModeValidationModes
+        $normalizeDeliveryMode
     ) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
@@ -1296,16 +1273,11 @@ Route::middleware('auth:sanctum')->group(function () use (
             'scheduled_at' => ['sometimes', 'nullable', 'date'],
             'schedule_start_at' => ['sometimes', 'nullable', 'date'],
             'schedule_end_at' => ['sometimes', 'nullable', 'date'],
-            'delivery_mode' => ['sometimes', 'required', Rule::in($deliveryModeValidationModes)],
             'one_take_only' => ['sometimes', 'boolean'],
             'shuffle_questions' => ['sometimes', 'boolean'],
             'room_ids' => ['sometimes', 'array'],
             'room_ids.*' => ['integer', 'exists:rooms,id'],
         ]);
-
-        if (array_key_exists('delivery_mode', $validated)) {
-            $validated['delivery_mode'] = $normalizeDeliveryMode((string) $validated['delivery_mode']);
-        }
 
         $currentScheduleStart = $exam->schedule_start_at ?? $exam->scheduled_at;
         $resolvedScheduleStart = array_key_exists('schedule_start_at', $validated)
@@ -1358,10 +1330,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $exam->scheduled_at = $resolvedScheduleStart;
         $exam->schedule_start_at = $resolvedScheduleStart;
         $exam->schedule_end_at = $resolvedScheduleEnd;
-
-        if ($normalizeDeliveryMode($exam->delivery_mode) === Exam::DELIVERY_MODE_TEACHER_PACED) {
-            $exam->shuffle_questions = false;
-        }
+        $exam->delivery_mode = Exam::DELIVERY_MODE_OPEN_NAVIGATION;
 
         $exam->save();
 
@@ -1458,10 +1427,7 @@ Route::middleware('auth:sanctum')->group(function () use (
     Route::get('/exams/{exam}/live-dashboard', function (Request $request, Exam $exam) use (
         $isStaffMasterExaminer,
         $ensureActive,
-        $normalizeDeliveryMode,
-        $resolveTeacherPacedTotalItems,
-        $resolveTeacherPacingState,
-        $buildTeacherPacingPayload
+        $normalizeDeliveryMode
     ) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
@@ -1501,15 +1467,6 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json([
                 'message' => 'This exam is not assigned to the selected room.',
             ], 422);
-        }
-
-        $teacherPacing = null;
-
-        if ($deliveryMode === Exam::DELIVERY_MODE_TEACHER_PACED) {
-            $teacherPacing = $buildTeacherPacingPayload(
-                $resolveTeacherPacingState((int) $exam->id, (int) $room->id),
-                $resolveTeacherPacedTotalItems($exam),
-            );
         }
 
         $students = $room->members()
@@ -1705,176 +1662,9 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'attempts_started' => $attemptsStarted,
                 'attempts_submitted' => $attemptsSubmitted,
             ],
-            'teacher_pacing' => $teacherPacing,
             'rows' => $rows,
             'item_summary' => $itemSummary,
             'generated_at' => now(),
-        ]);
-    });
-
-    Route::post('/exams/{exam}/teacher-paced', function (Request $request, Exam $exam) use (
-        $isStaffMasterExaminer,
-        $ensureActive,
-        $recordAudit,
-        $normalizeDeliveryMode,
-        $resolveTeacherPacedTotalItems,
-        $buildTeacherPacingPayload
-    ) {
-        if ($inactiveResponse = $ensureActive($request)) {
-            return $inactiveResponse;
-        }
-
-        $user = $request->user();
-
-        if (!$isStaffMasterExaminer($user)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if ((int) $exam->created_by !== (int) $user->id) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        $deliveryMode = $normalizeDeliveryMode($exam->delivery_mode);
-
-        if ($deliveryMode !== Exam::DELIVERY_MODE_TEACHER_PACED) {
-            return response()->json([
-                'message' => 'Teacher pacing is only available for Teacher Paced exams.',
-            ], 422);
-        }
-
-        $validated = $request->validate([
-            'room_id' => ['required', 'integer', 'exists:rooms,id'],
-            'action' => ['required', Rule::in(['start', 'next', 'previous', 'stop'])],
-        ]);
-
-        $room = Room::query()->find((int) $validated['room_id']);
-
-        if (!$room) {
-            return response()->json(['message' => 'Room not found.'], 404);
-        }
-
-        if ((int) $room->created_by !== (int) $user->id) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        $isAssigned = $exam->rooms()
-            ->where('rooms.id', $room->id)
-            ->exists();
-
-        if (!$isAssigned) {
-            return response()->json([
-                'message' => 'This exam is not assigned to the selected room.',
-            ], 422);
-        }
-
-        $action = (string) $validated['action'];
-        $totalItems = $resolveTeacherPacedTotalItems($exam);
-
-        $stateRow = DB::transaction(function () use ($exam, $room, $user, $action, $totalItems) {
-            $query = DB::table('exam_room_pacing_states')
-                ->where('exam_id', (int) $exam->id)
-                ->where('room_id', (int) $room->id)
-                ->lockForUpdate();
-
-            $row = $query->first();
-            $now = now();
-
-            if (!$row) {
-                DB::table('exam_room_pacing_states')->insert([
-                    'exam_id' => (int) $exam->id,
-                    'room_id' => (int) $room->id,
-                    'is_active' => false,
-                    'current_item_number' => null,
-                    'started_at' => null,
-                    'updated_by' => (int) $user->id,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ]);
-
-                $row = $query->first();
-            }
-
-            $isActive = (bool) ($row->is_active ?? false);
-            $currentItemNumber = is_null($row->current_item_number)
-                ? 1
-                : (int) $row->current_item_number;
-            $startedAt = $row->started_at;
-
-            if ($action === 'next' && !$isActive) {
-                throw \Illuminate\Validation\ValidationException::withMessages([
-                    'action' => 'Start teacher pacing before moving to the next question.',
-                ]);
-            }
-
-            if ($action === 'previous' && !$isActive) {
-                throw \Illuminate\Validation\ValidationException::withMessages([
-                    'action' => 'Start teacher pacing before moving to the previous question.',
-                ]);
-            }
-
-            switch ($action) {
-                case 'start':
-                    $isActive = true;
-                    $currentItemNumber = 1;
-                    $startedAt = $now;
-                    break;
-                case 'next':
-                    $currentItemNumber = min($totalItems, max(1, $currentItemNumber + 1));
-                    break;
-                case 'previous':
-                    $currentItemNumber = max(1, $currentItemNumber - 1);
-                    break;
-                case 'stop':
-                    $isActive = false;
-                    $currentItemNumber = null;
-                    $startedAt = null;
-                    break;
-            }
-
-            DB::table('exam_room_pacing_states')
-                ->where('id', (int) $row->id)
-                ->update([
-                    'is_active' => $isActive,
-                    'current_item_number' => $isActive ? $currentItemNumber : null,
-                    'started_at' => $startedAt,
-                    'updated_by' => (int) $user->id,
-                    'updated_at' => $now,
-                ]);
-
-            return DB::table('exam_room_pacing_states')
-                ->where('id', (int) $row->id)
-                ->first();
-        });
-
-        $teacherPacing = $buildTeacherPacingPayload([
-            'is_active' => (bool) ($stateRow->is_active ?? false),
-            'current_item_number' => is_null($stateRow->current_item_number) ? null : (int) $stateRow->current_item_number,
-            'started_at' => $stateRow->started_at ?? null,
-            'updated_at' => $stateRow->updated_at ?? null,
-        ], $totalItems);
-
-        $recordAudit(
-            $user,
-            'exam.teacher_paced.update',
-            'exam',
-            $exam->id,
-            'Teacher paced control updated',
-            [
-                'room_id' => (int) $room->id,
-                'action' => $action,
-                'teacher_pacing' => $teacherPacing,
-            ],
-            $request,
-        );
-
-        return response()->json([
-            'message' => match ($action) {
-                'start' => 'Teacher pacing started.',
-                'next' => 'Moved to the next question.',
-                'previous' => 'Moved to the previous question.',
-                default => 'Teacher pacing stopped.',
-            },
-            'teacher_pacing' => $teacherPacing,
         ]);
     });
 
@@ -1885,7 +1675,6 @@ Route::middleware('auth:sanctum')->group(function () use (
         $canManageRooms,
         $ensureActive,
         $recordAudit,
-        $normalizeDeliveryMode,
         $autoSubmitExpiredAttempt,
         $buildAttemptPayload
     ) {
@@ -1958,8 +1747,6 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
-        $deliveryMode = $normalizeDeliveryMode($exam->delivery_mode);
-
         $availableQuestionCount = $questionBank->questions()->count();
         $targetItems = min((int) $exam->total_items, $availableQuestionCount);
 
@@ -2009,7 +1796,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $questionQuery = DB::table('question_bank_questions')
             ->where('question_bank_id', $questionBankId);
 
-        if ((bool) $exam->shuffle_questions && $deliveryMode !== Exam::DELIVERY_MODE_TEACHER_PACED) {
+        if ((bool) $exam->shuffle_questions) {
             $questionQuery->inRandomOrder();
         } else {
             $questionQuery
@@ -2129,8 +1916,6 @@ Route::middleware('auth:sanctum')->group(function () use (
         $canManageRooms,
         $ensureActive,
         $normalizeAnswerText,
-        $normalizeDeliveryMode,
-        $resolveTeacherPacingState,
         $refreshAttemptMetrics,
         $autoSubmitExpiredAttempt,
         $buildAttemptPayload
@@ -2158,9 +1943,6 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
-        $attempt->loadMissing('exam:id,delivery_mode');
-        $deliveryMode = $normalizeDeliveryMode($attempt->exam?->delivery_mode);
-
         $validated = $request->validate([
             'question_id' => ['required', 'integer', 'exists:question_bank_questions,id'],
             'selected_option_id' => ['nullable', 'integer', 'exists:question_bank_options,id'],
@@ -2168,35 +1950,6 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
 
         $questionId = (int) $validated['question_id'];
-
-        if ($deliveryMode === Exam::DELIVERY_MODE_INSTANT_FEEDBACK) {
-            $nextRequired = DB::table('exam_attempt_questions as attempt_questions')
-                ->leftJoin('exam_attempt_answers as answers', function ($join) use ($attempt) {
-                    $join
-                        ->on('answers.question_bank_question_id', '=', 'attempt_questions.question_bank_question_id')
-                        ->where('answers.exam_attempt_id', '=', (int) $attempt->id);
-                })
-                ->where('attempt_questions.exam_attempt_id', (int) $attempt->id)
-                ->whereNull('answers.id')
-                ->orderBy('attempt_questions.item_number')
-                ->select('attempt_questions.question_bank_question_id', 'attempt_questions.item_number')
-                ->first();
-
-            if (!$nextRequired) {
-                return response()->json([
-                    'message' => 'All questions are already answered. Submit your attempt to finish.',
-                    ...$buildAttemptPayload($attempt),
-                ], 422);
-            }
-
-            if ((int) $nextRequired->question_bank_question_id !== $questionId) {
-                return response()->json([
-                    'message' => 'Answer questions in order for Instant Feedback mode.',
-                    'next_required_item_number' => (int) $nextRequired->item_number,
-                    ...$buildAttemptPayload($attempt),
-                ], 422);
-            }
-        }
 
         $attemptQuestion = $attempt->attemptQuestions()
             ->where('question_bank_question_id', $questionId)
@@ -2216,26 +1969,6 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json([
                 'message' => 'Question not found.',
             ], 422);
-        }
-
-        if ($deliveryMode === Exam::DELIVERY_MODE_TEACHER_PACED) {
-            $teacherPacing = $resolveTeacherPacingState((int) $attempt->exam_id, (int) $attempt->room_id);
-
-            if (!($teacherPacing['is_active'] ?? false)) {
-                return response()->json([
-                    'message' => 'Wait for your teacher to start paced mode.',
-                    ...$buildAttemptPayload($attempt),
-                ], 422);
-            }
-
-            $currentItemNumber = (int) ($teacherPacing['current_item_number'] ?? 0);
-
-            if ($currentItemNumber < 1 || (int) $attemptQuestion->item_number !== $currentItemNumber) {
-                return response()->json([
-                    'message' => 'You can only answer the question currently opened by your teacher.',
-                    ...$buildAttemptPayload($attempt),
-                ], 422);
-            }
         }
 
         $selectedOptionId = is_null($validated['selected_option_id'] ?? null)
@@ -2325,7 +2058,6 @@ Route::middleware('auth:sanctum')->group(function () use (
     ) use (
         $canManageRooms,
         $ensureActive,
-        $normalizeDeliveryMode,
         $autoSubmitExpiredAttempt,
         $buildAttemptPayload
     ) {
@@ -2348,16 +2080,6 @@ Route::middleware('auth:sanctum')->group(function () use (
         if ($attempt->status !== ExamAttempt::STATUS_IN_PROGRESS) {
             return response()->json([
                 'message' => 'This attempt is already submitted.',
-                ...$buildAttemptPayload($attempt),
-            ], 422);
-        }
-
-        $attempt->loadMissing('exam:id,delivery_mode');
-        $deliveryMode = $normalizeDeliveryMode($attempt->exam?->delivery_mode);
-
-        if ($deliveryMode !== Exam::DELIVERY_MODE_OPEN_NAVIGATION) {
-            return response()->json([
-                'message' => 'Bookmarking is only available in Open Navigation mode.',
                 ...$buildAttemptPayload($attempt),
             ], 422);
         }
@@ -2392,7 +2114,6 @@ Route::middleware('auth:sanctum')->group(function () use (
         $canManageRooms,
         $ensureActive,
         $recordAudit,
-        $normalizeDeliveryMode,
         $refreshAttemptMetrics,
         $autoSubmitExpiredAttempt,
         $buildAttemptPayload
@@ -2418,19 +2139,6 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'message' => 'Attempt already submitted.',
                 ...$buildAttemptPayload($attempt),
             ]);
-        }
-
-        $attempt->loadMissing('exam:id,delivery_mode');
-        $deliveryMode = $normalizeDeliveryMode($attempt->exam?->delivery_mode);
-
-        if (
-            $deliveryMode === Exam::DELIVERY_MODE_INSTANT_FEEDBACK
-            && (int) $attempt->answered_count < (int) $attempt->total_items
-        ) {
-            return response()->json([
-                'message' => 'Instant Feedback mode requires all questions to be answered before submitting.',
-                ...$buildAttemptPayload($attempt),
-            ], 422);
         }
 
         $attempt = $refreshAttemptMetrics($attempt, true);

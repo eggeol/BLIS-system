@@ -3,17 +3,10 @@ function padTimePart(part) {
 }
 
 export function normalizeExamDeliveryMode(mode) {
-  const normalized = String(mode ?? '').toLowerCase()
-
-  if (normalized === 'teacher_paced' || normalized === 'live_quiz') return 'teacher_paced'
-  if (normalized === 'instant_feedback') return 'instant_feedback'
   return 'open_navigation'
 }
 
 export function examDeliveryModeLabel(mode) {
-  const normalized = normalizeExamDeliveryMode(mode)
-  if (normalized === 'teacher_paced') return 'Teacher Paced'
-  if (normalized === 'instant_feedback') return 'Instant Feedback'
   return 'Open Navigation'
 }
 
