@@ -1246,10 +1246,10 @@
                       <span>{{ libraryParseError }}</span>
                     </div>
 
-                    <div v-if="libraryPreviewWarnings.length > 0" class="library-warning-list">
+                    <div v-if="groupedLibraryPreviewWarnings.length > 0" class="library-warning-list">
                       <p class="warning-list-title">Parser Notes</p>
                       <ul>
-                        <li v-for="(warning, warningIndex) in libraryPreviewWarnings" :key="`warning-${warningIndex}`">
+                        <li v-for="(warning, warningIndex) in groupedLibraryPreviewWarnings" :key="`warning-${warningIndex}`">
                           {{ warning }}
                         </li>
                       </ul>
@@ -2501,6 +2501,7 @@ const {
   libraryQuestionBanks,
   selectedLibraryBank,
   libraryPreviewWarnings,
+  groupedLibraryPreviewWarnings,
   digitalizedQuestions,
   libraryForm,
   librarySubjectCategories,

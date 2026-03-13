@@ -785,8 +785,52 @@ Route::middleware('auth:sanctum')->group(function () use (
             'file' => [
                 'required',
                 'file',
-                'mimes:docx',
                 'max:20480',
+                static function (string $attribute, mixed $value, \Closure $fail): void {
+                    if (!$value instanceof \Illuminate\Http\UploadedFile) {
+                        $fail('The uploaded file is invalid.');
+                        return;
+                    }
+
+                    $extension = strtolower($value->getClientOriginalExtension());
+                    if ($extension === 'doc') {
+                        $fail('Legacy .doc files are not supported. Open the file in Word or Google Docs and save it as .docx, then try again.');
+                        return;
+                    }
+
+                    if ($extension !== 'docx') {
+                        $fail('Please upload a valid .docx file.');
+                        return;
+                    }
+
+                    $realPath = $value->getRealPath();
+                    if (!is_string($realPath) || $realPath === '' || !is_file($realPath)) {
+                        $fail('The uploaded .docx file could not be read. Please upload it again.');
+                        return;
+                    }
+
+                    $zip = new ZipArchive();
+                    if ($zip->open($realPath) !== true) {
+                        $fail('The uploaded .docx file is invalid or corrupted. Save/export it again as .docx and try again.');
+                        return;
+                    }
+
+                    $requiredEntries = [
+                        '[Content_Types].xml',
+                        '_rels/.rels',
+                        'word/document.xml',
+                    ];
+
+                    foreach ($requiredEntries as $entry) {
+                        if ($zip->locateName($entry) === false) {
+                            $zip->close();
+                            $fail('The uploaded .docx file is invalid or corrupted. Save/export it again as .docx and try again.');
+                            return;
+                        }
+                    }
+
+                    $zip->close();
+                },
             ],
         ]);
 
