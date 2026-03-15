@@ -73,6 +73,21 @@ class DocxQuestionParser
 
         foreach ($phpWord->getSections() as $sectionIndex => $section) {
             foreach ($section->getElements() as $element) {
+                // Handle Table elements (Word often uses invisible tables for multi-column options)
+                if ($element instanceof \PhpOffice\PhpWord\Element\Table) {
+                    foreach ($element->getRows() as $row) {
+                        foreach ($row->getCells() as $cell) {
+                            foreach ($cell->getElements() as $cellElement) {
+                                $line = $this->lineFromElement($cellElement, $sectionIndex);
+                                if ($line !== null) {
+                                    $lines[] = $line;
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 $line = $this->lineFromElement($element, $sectionIndex);
                 if ($line === null) {
                     continue;
@@ -101,7 +116,8 @@ class DocxQuestionParser
             return null;
         }
 
-        $text = $this->normalizeText(implode('', array_column($segments, 'text')));
+        $rawText = implode('', array_column($segments, 'text'));
+        $text = $this->normalizeText($rawText);
         if ($text === '') {
             return null;
         }
@@ -127,6 +143,7 @@ class DocxQuestionParser
         return [
             'section_index' => $sectionIndex,
             'text' => $text,
+            'raw_text' => trim($rawText),
             'num_id' => $numId,
             'depth' => is_numeric($depth) ? (int) $depth : null,
             'is_red' => $isRed,
@@ -163,6 +180,14 @@ class DocxQuestionParser
             }
 
             return $segments;
+        }
+
+        $className = get_class($element);
+        if (str_ends_with($className, '\\Tab')) {
+            return [['text' => "\t", 'color' => null]];
+        }
+        if (str_ends_with($className, '\\TextBreak')) {
+            return [['text' => "\n", 'color' => null]];
         }
 
         if (method_exists($element, 'getText')) {
@@ -363,6 +388,14 @@ class DocxQuestionParser
                 $existingLabels[$label] = true;
             }
 
+            usort(
+                $current['options'],
+                fn (array $left, array $right): int => $this->compareOptionLabels(
+                    (string) ($left['label'] ?? ''),
+                    (string) ($right['label'] ?? ''),
+                )
+            );
+
             $redLabels = [];
             foreach ($current['options'] as $option) {
                 if ($option['is_red']) {
@@ -386,7 +419,13 @@ class DocxQuestionParser
 
         foreach ($lines as $line) {
             $text = $line['text'];
+            $rawText = $line['raw_text'] ?? $text;
+
             if ($text === '') {
+                continue;
+            }
+
+            if ($this->isIgnorableHeader($text)) {
                 continue;
             }
 
@@ -395,7 +434,7 @@ class DocxQuestionParser
             }
 
             $strippedQuestion = $this->stripQuestionPrefix($text);
-            $optionWithLabel = $this->extractOptionWithLabel($text);
+            $optionsWithLabels = $this->extractOptionsWithLabels($rawText);
 
             $isQuestionAnchor = $dominantQuestionNumId !== null
                 && $line['num_id'] !== null
@@ -429,7 +468,7 @@ class DocxQuestionParser
                 continue;
             }
 
-            if ($optionWithLabel !== null) {
+            if ($optionsWithLabels !== null) {
                 if (count($current['pending_structural']) > 0) {
                     $current['text'] = $this->appendStructuralLinesToQuestionText(
                         $current['text'],
@@ -439,11 +478,13 @@ class DocxQuestionParser
                 }
 
                 $current['has_labeled_options'] = true;
-                $current['options'][] = [
-                    'label' => $optionWithLabel['label'],
-                    'text' => $optionWithLabel['text'],
-                    'is_red' => $line['is_red'],
-                ];
+                foreach ($optionsWithLabels as $extractedOption) {
+                    $current['options'][] = [
+                        'label' => $extractedOption['label'],
+                        'text' => $extractedOption['text'],
+                        'is_red' => $line['is_red'],
+                    ];
+                }
                 continue;
             }
 
@@ -451,6 +492,25 @@ class DocxQuestionParser
                 || ($dominantQuestionNumId !== null && $line['num_id'] !== null && $line['num_id'] !== $dominantQuestionNumId);
 
             if ($isStructuralOption) {
+                // Check for embedded secondary option after tabs in raw text.
+                // Word often uses list numbering for A./B. labels (not in text),
+                // while C./D. appear inline after tab characters.
+                // e.g. raw: "Analytic Engine\t\t\tc. Punch Cards"
+                $splitOptions = $this->splitStructuralLineWithEmbeddedLabel($rawText);
+
+                if ($splitOptions !== null) {
+                    // We found an embedded label — produce two options from this one line
+                    foreach ($splitOptions as $splitOption) {
+                        $current['options'][] = [
+                            'label' => $splitOption['label'],
+                            'text' => $splitOption['text'],
+                            'is_red' => $line['is_red'],
+                        ];
+                    }
+                    $current['has_labeled_options'] = true;
+                    continue;
+                }
+
                 if (!$current['has_labeled_options'] && count($current['options']) === 0) {
                     if ($this->shouldStartStructuralOptions($current['pending_structural'], $line)) {
                         $current['text'] = $this->appendStructuralLinesToQuestionText(
@@ -737,19 +797,173 @@ class DocxQuestionParser
         return $this->normalizeText($matches[1] ?? '');
     }
 
-    /**
-     * @return array{label: string, text: string}|null
-     */
-    private function extractOptionWithLabel(string $text): ?array
+    private function isIgnorableHeader(string $text): bool
     {
-        if (!preg_match('/^([A-H])[\).\:-]\s*(.+)$/iu', $text, $matches)) {
+        // Ignore lines like "1. Name ____ Direction: Choose the best answer..."
+        // Or "Directions: Choose the best..."
+        if (preg_match('/^(?:\d+[\).\:-]\s*)?(?:Name|Date|Score|Section|Direction)s?\b\s*[_:\-]/i', $text)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<int, array{label: string, text: string}>|null
+     */
+    private function extractOptionsWithLabels(string $rawText): ?array
+    {
+        $rawText = trim($rawText);
+        if ($rawText === '') {
             return null;
         }
 
-        return [
-            'label' => strtoupper($matches[1]),
-            'text' => $this->normalizeText($matches[2] ?? ''),
-        ];
+        // Must start with a valid option label pattern
+        if (!preg_match('/^([A-H])[\).\:-]\s*/iu', $rawText)) {
+            return null;
+        }
+
+        // Normalize: replace tabs with a marker we can detect
+        $normalized = str_replace("\t", '    ', $rawText);
+
+        // Strategy: find ALL option label positions in the text, then split between them.
+        // This handles any number of spaces/tabs between side-by-side options.
+        $labelPositions = [];
+        $offset = 0;
+        $length = strlen($normalized);
+
+        while ($offset < $length) {
+            // Match a label like "A." or "A)" or "A:" at position $offset
+            // The \G\s* consumes any leading whitespace before the label letter
+            if (preg_match('/\G(\s*)([A-H])[\).\:-]\s*/iu', $normalized, $m, 0, $offset)) {
+                $leadingWhitespace = $m[1];
+                $labelLetter = $m[2];
+
+                // Valid label position: at start of string, or has 2+ whitespace chars before it
+                $isAtStart = ($offset === 0 && $leadingWhitespace === '');
+                $hasGap = strlen($leadingWhitespace) >= 2;
+
+                if ($isAtStart || $hasGap) {
+                    $labelPositions[] = [
+                        'label' => strtoupper($labelLetter),
+                        'fullMatchStart' => $offset,
+                        'textStart' => $offset + strlen($m[0]),
+                    ];
+                }
+
+                $offset += strlen($m[0]);
+                continue;
+            }
+
+            $offset++;
+        }
+
+        // If we only found one or zero labels, try a more lenient search
+        // that allows single-space separation (for collapsed formatting)
+        if (count($labelPositions) <= 1) {
+            $labelPositions = [];
+            preg_match_all('/(?:^|\s)([A-H])[\).\:-]\s*/iu', $normalized, $allMatches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
+
+            foreach ($allMatches as $m) {
+                $labelPositions[] = [
+                    'label' => strtoupper($m[1][0]),
+                    'fullMatchStart' => $m[0][1],
+                    'textStart' => $m[0][1] + strlen($m[0][0]),
+                ];
+            }
+
+            // For the lenient parse, all labels must be unique to be valid
+            $labels = array_column($labelPositions, 'label');
+            if (count($labels) !== count(array_unique($labels))) {
+                // Ambiguous — fall back to treating it as a single option
+                $labelPositions = [];
+                if (preg_match('/^([A-H])[\).\:-]\s*(.+)$/iu', $normalized, $singleMatch)) {
+                    return [[
+                        'label' => strtoupper($singleMatch[1]),
+                        'text' => $this->normalizeText($singleMatch[2]),
+                    ]];
+                }
+                return null;
+            }
+        }
+
+        if (count($labelPositions) === 0) {
+            return null;
+        }
+
+        // Extract text between consecutive label positions
+        $options = [];
+        $count = count($labelPositions);
+        for ($i = 0; $i < $count; $i++) {
+            $textStart = $labelPositions[$i]['textStart'];
+            $textEnd = ($i + 1 < $count)
+                ? $labelPositions[$i + 1]['fullMatchStart']
+                : $length;
+
+            $optionText = $this->normalizeText(substr($normalized, $textStart, $textEnd - $textStart));
+
+            $options[] = [
+                'label' => $labelPositions[$i]['label'],
+                'text' => $optionText,
+            ];
+        }
+
+        // Filter out empty options
+        $options = array_values(array_filter(
+            $options,
+            fn(array $opt): bool => $this->normalizeText($opt['text']) !== ''
+        ));
+
+        return $options === [] ? null : $options;
+    }
+
+    /**
+     * Word sometimes renders two answer choices on one structural line where the
+     * first choice is carried by list numbering and the second choice appears
+     * inline after tab spacing, e.g. "Worm\t\t\tc. Spam".
+     *
+     * @return array<int, array{label: string, text: string}>|null
+     */
+    private function splitStructuralLineWithEmbeddedLabel(string $rawText): ?array
+    {
+        $rawText = trim($rawText);
+        if ($rawText === '') {
+            return null;
+        }
+
+        if (preg_match('/^([A-H])[\).\:-]\s*/iu', $rawText)) {
+            return null;
+        }
+
+        $normalized = str_replace("\t", '    ', $rawText);
+        if (!preg_match('/\s{2,}([A-H])[\).\:-]\s*/iu', $normalized, $match, PREG_OFFSET_CAPTURE)) {
+            return null;
+        }
+
+        $embeddedLabelOffset = $match[1][1] ?? null;
+        if (!is_int($embeddedLabelOffset) || $embeddedLabelOffset <= 0) {
+            return null;
+        }
+
+        $leadingText = $this->normalizeText(substr($normalized, 0, $embeddedLabelOffset));
+        if ($leadingText === '') {
+            return null;
+        }
+
+        $tail = ltrim(substr($normalized, $embeddedLabelOffset));
+        if ($tail === '') {
+            return null;
+        }
+
+        $tailOptions = $this->extractOptionsWithLabels($tail);
+        if ($tailOptions === null || $tailOptions === []) {
+            return null;
+        }
+
+        return array_merge([[
+            'label' => '',
+            'text' => $leadingText,
+        ]], $tailOptions);
     }
 
     private function looksLikeQuestionText(string $text): bool
@@ -901,5 +1115,27 @@ class DocxQuestionParser
         }
 
         return (string) ($targetIndex + 1);
+    }
+
+    private function compareOptionLabels(string $leftLabel, string $rightLabel): int
+    {
+        return $this->optionLabelSortKey($leftLabel) <=> $this->optionLabelSortKey($rightLabel);
+    }
+
+    private function optionLabelSortKey(string $label): int
+    {
+        $normalized = strtoupper(trim($label));
+        $alphaLabels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+        $alphaIndex = array_search($normalized, $alphaLabels, true);
+
+        if ($alphaIndex !== false) {
+            return (int) $alphaIndex;
+        }
+
+        if (ctype_digit($normalized)) {
+            return 100 + (int) $normalized;
+        }
+
+        return 1000;
     }
 }

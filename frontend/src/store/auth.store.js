@@ -9,15 +9,22 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => !!user.value)
 
   // ─── actions ─────────────────────────────────────────────────────────────────
-  async function login(email, password) {
-    const { data } = await authApi.login({ email, password })
+  async function login(identifier, password) {
+    const { data } = await authApi.login({ identifier, password })
     user.value = data.user
     initialized.value = true
   }
 
-  async function register(name, student_id, email, password, password_confirmation) {
+  async function register(first_name, middle_name, last_name, student_id, email, password, password_confirmation, agreed) {
     const { data } = await authApi.register({
-      name, student_id, email, password, password_confirmation,
+      first_name,
+      middle_name,
+      last_name,
+      student_id,
+      email,
+      password,
+      password_confirmation,
+      agreed,
     })
     user.value = data.user
     initialized.value = true

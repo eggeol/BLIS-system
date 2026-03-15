@@ -13,18 +13,6 @@ class Exam extends Model
     use HasFactory;
 
     public const DELIVERY_MODE_OPEN_NAVIGATION = 'open_navigation';
-    public const DELIVERY_MODE_TEACHER_PACED = 'teacher_paced';
-    public const DELIVERY_MODE_INSTANT_FEEDBACK = 'instant_feedback';
-
-    // Legacy values kept for backwards compatibility.
-    public const DELIVERY_MODE_STANDARD = 'standard';
-    public const DELIVERY_MODE_LIVE_QUIZ = 'live_quiz';
-
-    public const DELIVERY_MODES = [
-        self::DELIVERY_MODE_OPEN_NAVIGATION,
-        self::DELIVERY_MODE_TEACHER_PACED,
-        self::DELIVERY_MODE_INSTANT_FEEDBACK,
-    ];
 
     /**
      * The attributes that are mass assignable.

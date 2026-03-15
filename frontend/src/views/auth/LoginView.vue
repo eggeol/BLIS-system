@@ -32,15 +32,15 @@
 
         <form class="auth-form" @submit.prevent="handleSubmit">
           <label class="field-group">
-            <span class="field-label">Email address</span>
+            <span class="field-label">Email or Student ID</span>
             <div class="field-wrap">
-              <Mail :size="17" class="field-icon" />
+              <UserRound :size="17" class="field-icon" />
               <input
-                v-model="form.email"
-                type="email"
+                v-model="form.identifier"
+                type="text"
                 class="field-input"
-                placeholder="you@lnu.edu.ph"
-                autocomplete="email"
+                placeholder="e.g. you@lnu.edu.ph or 1234567"
+                autocomplete="username"
               />
             </div>
           </label>
@@ -99,9 +99,10 @@ import {
   LockKeyhole,
   Mail,
   ShieldCheck,
+  UserRound,
 } from 'lucide-vue-next'
 
-const form = reactive({ email: '', password: '', remember: false })
+const form = reactive({ identifier: '', password: '', remember: false })
 const showPw = ref(false)
 const isLoading = ref(false)
 const apiError = ref('')
@@ -118,17 +119,17 @@ const highlights = [
 async function handleSubmit() {
   apiError.value = ''
 
-  if (!form.email || !form.password) {
-    apiError.value = 'Email and password are required.'
+  if (!form.identifier || !form.password) {
+    apiError.value = 'Email or Student ID and password are required.'
     return
   }
 
   isLoading.value = true
   try {
-    await auth.login(form.email, form.password)
+    await auth.login(form.identifier, form.password)
     await router.push('/dashboard')
   } catch (error) {
-    apiError.value = error.response?.data?.message ?? 'Invalid email or password. Please try again.'
+    apiError.value = error.response?.data?.message ?? 'Invalid credentials. Please try again.'
   } finally {
     isLoading.value = false
   }
@@ -138,6 +139,7 @@ async function handleSubmit() {
 <style scoped>
 .auth-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: minmax(320px, 460px) 1fr;
   background:
@@ -430,9 +432,53 @@ async function handleSubmit() {
   }
 }
 
+@media (min-width: 981px) {
+  .auth-shell {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .auth-brand,
+  .auth-main {
+    min-height: 0;
+  }
+
+  .auth-brand {
+    padding: clamp(28px, 3vw, 42px) clamp(24px, 2.6vw, 34px);
+  }
+
+  .brand-card {
+    padding: clamp(24px, 2.1vw, 30px);
+  }
+
+  .brand-card h1 {
+    font-size: clamp(28px, 2vw, 31px);
+  }
+
+  .brand-copy {
+    margin-top: 12px;
+  }
+
+  .brand-list {
+    gap: 10px;
+    padding-top: clamp(20px, 3vh, 28px);
+  }
+
+  .auth-main {
+    padding: clamp(24px, 3vw, 42px) 24px;
+  }
+
+  .auth-card {
+    padding: clamp(24px, 2vw, 32px);
+  }
+}
+
 @media (max-width: 980px) {
   .auth-shell {
     grid-template-columns: 1fr;
+    min-height: 100dvh;
+    height: auto;
   }
 
   .auth-brand {
@@ -448,4 +494,3 @@ async function handleSubmit() {
   }
 }
 </style>
-

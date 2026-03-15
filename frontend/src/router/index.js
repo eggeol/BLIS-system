@@ -3,8 +3,33 @@ import LoginView from '../views/auth/LoginView.vue'
 import RegisterView from '../views/auth/RegisterView.vue'
 import ForgotPasswordView from '../views/auth/ForgotPasswordView.vue'
 import DashboardLayout from '../views/dashboard/DashboardLayout.vue'
-import DashboardModuleView from '../views/dashboard/DashboardModuleView.vue'
 import { useAuthStore } from '../store/auth.store'
+import {
+  dashboardAllowedRouteNames,
+  dashboardDefaultRouteName,
+  getDashboardModuleMeta,
+  normalizeDashboardRole,
+} from '../views/dashboard/config/dashboardNavigation'
+
+const DashboardHomeView = () => import('../views/dashboard/student/DashboardHomeView.vue')
+const RoomsView = () => import('../views/dashboard/student/RoomsView.vue')
+const AnalyticsView = () => import('../views/dashboard/student/AnalyticsView.vue')
+const RoomManagementView = () => import('../views/dashboard/shared/RoomManagementView.vue')
+const LibraryView = () => import('../views/dashboard/staff/LibraryView.vue')
+const ExamsView = () => import('../views/dashboard/staff/ExamsView.vue')
+const ReportsView = () => import('../views/dashboard/staff/ReportsView.vue')
+const SettingsView = () => import('../views/dashboard/shared/SettingsView.vue')
+const UsersView = () => import('../views/dashboard/admin/UsersView.vue')
+const AuditView = () => import('../views/dashboard/admin/AuditView.vue')
+
+function dashboardRouteMeta(key) {
+  const moduleMeta = getDashboardModuleMeta(key)
+
+  return {
+    title: moduleMeta.title,
+    sub: moduleMeta.sub,
+  }
+}
 
 const routes = [
   { path: '/', redirect: '/login' },
@@ -19,72 +44,62 @@ const routes = [
       {
         path: 'home',
         name: 'dashboard-home',
-        component: DashboardModuleView,
-        props: { forcedNav: 'dashboard', embedded: true },
-        meta: { title: 'Dashboard', sub: 'Your LLE review performance at a glance' },
+        component: DashboardHomeView,
+        meta: dashboardRouteMeta('dashboard'),
       },
       {
         path: 'rooms',
         name: 'dashboard-rooms',
-        component: DashboardModuleView,
-        props: { forcedNav: 'rooms', embedded: true },
-        meta: { title: 'Rooms', sub: 'Join and track your assigned room memberships' },
+        component: RoomsView,
+        meta: dashboardRouteMeta('rooms'),
       },
       {
         path: 'analytics',
         name: 'dashboard-analytics',
-        component: DashboardModuleView,
-        props: { forcedNav: 'analytics', embedded: true },
-        meta: { title: 'Analytics', sub: 'Monitor trends and identify weak areas quickly' },
+        component: AnalyticsView,
+        meta: dashboardRouteMeta('analytics'),
       },
       {
         path: 'room-management',
         name: 'dashboard-room-management',
-        component: DashboardModuleView,
-        props: { forcedNav: 'room', embedded: true },
-        meta: { title: 'Rooms', sub: 'Create rooms, review enrollment, and track assigned exams' },
+        component: RoomManagementView,
+        meta: dashboardRouteMeta('room'),
       },
       {
         path: 'library',
         name: 'dashboard-library',
-        component: DashboardModuleView,
-        props: { forcedNav: 'library', embedded: true },
-        meta: { title: 'Library', sub: 'Manage exam content and question pools' },
+        component: LibraryView,
+        meta: dashboardRouteMeta('library'),
       },
       {
         path: 'exams',
         name: 'dashboard-exams',
-        component: DashboardModuleView,
-        props: { forcedNav: 'exams', embedded: true },
-        meta: { title: 'Exams', sub: 'Configure exam structures and schedules' },
+        component: ExamsView,
+        meta: dashboardRouteMeta('exams'),
       },
       {
         path: 'reports',
         name: 'dashboard-reports',
-        component: DashboardModuleView,
-        props: { forcedNav: 'reports', embedded: true },
-        meta: { title: 'Reports', sub: 'Review aggregate and student-level insights' },
+        component: ReportsView,
+        meta: dashboardRouteMeta('reports'),
       },
       {
         path: 'settings',
         name: 'dashboard-settings',
-        component: DashboardModuleView,
-        props: { forcedNav: 'settings', embedded: true },
-        meta: { title: 'Settings', sub: 'Manage preferences and account behavior' },
+        component: SettingsView,
+        meta: dashboardRouteMeta('settings'),
       },
       {
         path: 'users',
         name: 'dashboard-users',
-        component: DashboardModuleView,
-        props: { forcedNav: 'users', embedded: true },
-        meta: { title: 'Users', sub: 'Create accounts, assign roles, and manage account status' },
+        component: UsersView,
+        meta: dashboardRouteMeta('users'),
       },
       {
         path: 'audit',
         name: 'dashboard-audit',
-        component: DashboardModuleView,
-        props: { forcedNav: 'audit', embedded: true },
-        meta: { title: 'Audit Logs', sub: 'Track key system actions and account activity' },
+        component: AuditView,
+        meta: dashboardRouteMeta('audit'),
       },
     ],
   },
@@ -94,6 +109,10 @@ const router = createRouter({
   history: createWebHistory(),
   routes,
 })
+
+function normalizedRole(role) {
+  return normalizeDashboardRole(role)
+}
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
@@ -107,8 +126,21 @@ router.beforeEach(async (to) => {
     return { name: 'login' }
   }
 
+  const role = normalizedRole(auth.user?.role)
+
   if (isPublic && auth.isAuthenticated) {
-    return { name: 'dashboard-home' }
+    return { name: dashboardDefaultRouteName(role) }
+  }
+
+  const routeName = String(to.name ?? '')
+  const isDashboardRoute = routeName.startsWith('dashboard-')
+
+  if (isDashboardRoute) {
+    const allowedRoutes = dashboardAllowedRouteNames(role)
+
+    if (!allowedRoutes.includes(routeName)) {
+      return { name: dashboardDefaultRouteName(role) }
+    }
   }
 })
 

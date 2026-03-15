@@ -69,20 +69,9 @@ class ExamAttemptService
         ]);
 
         $deliveryMode = $this->deliveryModeService->normalize($attempt->exam?->delivery_mode);
-        $isInstantFeedback = $deliveryMode === Exam::DELIVERY_MODE_INSTANT_FEEDBACK;
         $isSubmitted = $attempt->status === ExamAttempt::STATUS_SUBMITTED;
-        $showPerQuestionFeedback = $isSubmitted || $isInstantFeedback;
+        $showPerQuestionFeedback = $isSubmitted;
         $answersByQuestionId = $attempt->answers->keyBy('question_bank_question_id');
-
-        $teacherPacing = null;
-
-        if ($deliveryMode === Exam::DELIVERY_MODE_TEACHER_PACED && $attempt->exam) {
-            $teacherPacingState = $this->deliveryModeService->resolveTeacherPacingState((int) $attempt->exam_id, (int) $attempt->room_id);
-            $teacherPacing = $this->deliveryModeService->buildTeacherPacingPayload(
-                $teacherPacingState,
-                $this->deliveryModeService->resolveTeacherPacedTotalItems($attempt->exam),
-            );
-        }
 
         $questions = $attempt->attemptQuestions
             ->sortBy('item_number')
@@ -90,7 +79,6 @@ class ExamAttemptService
             ->map(function (ExamAttemptQuestion $attemptQuestion) use (
                 $answersByQuestionId,
                 $isSubmitted,
-                $isInstantFeedback,
                 $showPerQuestionFeedback
             ): ?array {
                 $question = $attemptQuestion->question;
@@ -119,7 +107,7 @@ class ExamAttemptService
                         'answer_text' => $answer?->answer_text,
                         'is_correct' => $showPerQuestionFeedback && $hasAnswer ? $answer?->is_correct : null,
                     ],
-                    'correct_answer' => ($isSubmitted || ($isInstantFeedback && $hasAnswer))
+                    'correct_answer' => $isSubmitted
                         ? [
                             'label' => $question->answer_label,
                             'text' => $question->answer_text,
@@ -137,16 +125,6 @@ class ExamAttemptService
             $remainingSeconds = max(0, now()->diffInSeconds($attempt->expires_at, false));
         }
 
-        $nextRequiredItemNumber = null;
-
-        if ($isInstantFeedback && !$isSubmitted) {
-            $nextRequired = $attempt->attemptQuestions
-                ->sortBy('item_number')
-                ->first(fn (ExamAttemptQuestion $attemptQuestion) => !$answersByQuestionId->has((int) $attemptQuestion->question_bank_question_id));
-
-            $nextRequiredItemNumber = $nextRequired?->item_number;
-        }
-
         return [
             'attempt' => [
                 'id' => $attempt->id,
@@ -160,7 +138,6 @@ class ExamAttemptService
                 'expires_at' => $attempt->expires_at,
                 'submitted_at' => $attempt->submitted_at,
                 'remaining_seconds' => $remainingSeconds,
-                'next_required_item_number' => $nextRequiredItemNumber,
             ],
             'exam' => [
                 'id' => $attempt->exam?->id ?? $attempt->exam_id,
@@ -181,7 +158,6 @@ class ExamAttemptService
                 'name' => $attempt->room?->name,
                 'code' => $attempt->room?->code,
             ],
-            'teacher_pacing' => $teacherPacing,
             'questions' => $questions,
         ];
     }

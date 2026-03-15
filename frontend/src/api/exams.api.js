@@ -20,10 +20,6 @@ class ExamsApi {
   liveBoard(examId, roomId) {
     return http.get(`/exams/${examId}/live-dashboard`, { params: { room_id: roomId } })
   }
-
-  updateTeacherPacing(examId, payload) {
-    return http.post(`/exams/${examId}/teacher-paced`, payload)
-  }
 }
 
 export const examsApi = new ExamsApi()

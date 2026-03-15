@@ -26,10 +26,10 @@
       <nav class="layout-nav">
         <button
           v-for="item in navItems"
-          :key="item.name"
+          :key="item.routeName"
           class="layout-nav-item"
-          :class="{ active: currentRouteName === item.name }"
-          @click="navigate(item.name)"
+          :class="{ active: currentRouteName === item.routeName }"
+          @click="navigate(item.routeName)"
         >
           <component :is="item.icon" :size="18" class="layout-nav-icon" />
           <span v-if="!sidebarCollapsed" class="layout-nav-label">{{ item.label }}</span>
@@ -71,19 +71,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/auth.store'
+import { getDashboardNavItems } from './config/dashboardNavigation'
 import {
-  BarChart3,
-  BookOpen,
   ChevronLeft,
   ChevronRight,
-  ClipboardList,
-  DoorOpen,
-  FileText,
   GraduationCap,
-  LayoutDashboard,
   LogOut,
-  Settings,
-  UserRound,
 } from 'lucide-vue-next'
 
 const auth = useAuthStore()
@@ -95,33 +88,8 @@ const isMobileViewport = ref(false)
 const mobileMediaQuery = '(max-width: 900px)'
 
 const normalizedRole = computed(() => String(auth.user?.role ?? 'student').toLowerCase())
-const isManagementRole = computed(() => ['admin', 'staff_master_examiner'].includes(normalizedRole.value))
-const isAdminRole = computed(() => normalizedRole.value === 'admin')
 
-const studentNavItems = [
-  { name: 'dashboard-home', label: 'Dashboard', icon: LayoutDashboard },
-  { name: 'dashboard-rooms', label: 'Rooms', icon: DoorOpen },
-  { name: 'dashboard-analytics', label: 'Analytics', icon: BarChart3 },
-]
-
-const staffNavItems = [
-  { name: 'dashboard-library', label: 'Library', icon: BookOpen },
-  { name: 'dashboard-room-management', label: 'Room', icon: DoorOpen },
-  { name: 'dashboard-exams', label: 'Exams', icon: FileText },
-  { name: 'dashboard-reports', label: 'Reports', icon: BarChart3 },
-  { name: 'dashboard-settings', label: 'Settings', icon: Settings },
-]
-
-const adminNavItems = [
-  { name: 'dashboard-users', label: 'Users', icon: UserRound },
-  ...staffNavItems,
-  { name: 'dashboard-audit', label: 'Audit', icon: ClipboardList },
-]
-
-const navItems = computed(() => {
-  if (!isManagementRole.value) return studentNavItems
-  return isAdminRole.value ? adminNavItems : staffNavItems
-})
+const navItems = computed(() => getDashboardNavItems(normalizedRole.value))
 
 const currentRouteName = computed(() => String(route.name ?? ''))
 
@@ -130,6 +98,7 @@ const pageSubtitle = computed(() => String(route.meta?.sub ?? 'Manage your modul
 
 const displayName = computed(() => auth.user?.name ?? 'User')
 const displayRole = computed(() => {
+  if (normalizedRole.value === 'faculty') return 'Faculty'
   if (normalizedRole.value === 'staff_master_examiner') return 'Staff / Master Examiner'
   if (normalizedRole.value === 'admin') return 'Administrator'
   return 'Student'

@@ -5,6 +5,10 @@ class SettingsApi {
     return http.get('/settings/system')
   }
 
+  getPublicLegal() {
+    return http.get('/settings/public/legal')
+  }
+
   updateSystem(payload) {
     return http.put('/settings/system', payload)
   }
