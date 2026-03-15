@@ -31,7 +31,7 @@
         <div v-if="apiError" class="alert alert-danger">{{ apiError }}</div>
 
         <form class="auth-form" @submit.prevent="handleSubmit">
-          <div class="field-grid field-grid-three">
+          <div class="field-grid auth-form-grid">
             <label class="field-group">
               <span class="field-label">First name</span>
               <div class="field-wrap">
@@ -59,7 +59,9 @@
                 />
               </div>
             </label>
+          </div>
 
+          <div class="field-grid auth-form-grid">
             <label class="field-group">
               <span class="field-label">Last name</span>
               <div class="field-wrap">
@@ -73,23 +75,23 @@
                 />
               </div>
             </label>
-          </div>
 
-          <label class="field-group">
-            <span class="field-label">Student ID</span>
-            <div class="field-wrap">
-              <Hash :size="17" class="field-icon" />
-              <input
-                v-model="form.student_id"
-                type="text"
-                class="field-input"
-                placeholder="e.g. 2301290"
-                inputmode="numeric"
-                pattern="[0-9]*"
-                autocomplete="off"
-              />
-            </div>
-          </label>
+            <label class="field-group">
+              <span class="field-label">Student ID</span>
+              <div class="field-wrap">
+                <Hash :size="17" class="field-icon" />
+                <input
+                  v-model="form.student_id"
+                  type="text"
+                  class="field-input"
+                  placeholder="e.g. 2301290"
+                  inputmode="numeric"
+                  pattern="[0-9]*"
+                  autocomplete="off"
+                />
+              </div>
+            </label>
+          </div>
 
           <label class="field-group">
             <span class="field-label">Email address</span>
@@ -112,13 +114,18 @@
                 <LockKeyhole :size="17" class="field-icon" />
                 <input
                   v-model="form.password"
-                  :type="showPw ? 'text' : 'password'"
+                  :type="showPassword ? 'text' : 'password'"
                   class="field-input field-input-with-toggle"
                   placeholder="Min. 8 characters"
                   autocomplete="new-password"
                 />
-                <button type="button" class="field-toggle" @click="showPw = !showPw">
-                  <EyeOff v-if="showPw" :size="16" />
+                <button
+                  type="button"
+                  class="field-toggle"
+                  aria-label="Toggle password visibility"
+                  @click="showPassword = !showPassword"
+                >
+                  <EyeOff v-if="showPassword" :size="16" />
                   <Eye v-else :size="16" />
                 </button>
               </div>
@@ -130,12 +137,21 @@
                 <LockKeyhole :size="17" class="field-icon" />
                 <input
                   v-model="form.password_confirmation"
-                  :type="showPw ? 'text' : 'password'"
-                  class="field-input"
+                  :type="showPasswordConfirmation ? 'text' : 'password'"
+                  class="field-input field-input-with-toggle"
                   :class="{ 'field-input-error': pwMismatch }"
                   placeholder="Re-enter password"
                   autocomplete="new-password"
                 />
+                <button
+                  type="button"
+                  class="field-toggle"
+                  aria-label="Toggle confirm password visibility"
+                  @click="showPasswordConfirmation = !showPasswordConfirmation"
+                >
+                  <EyeOff v-if="showPasswordConfirmation" :size="16" />
+                  <Eye v-else :size="16" />
+                </button>
               </div>
               <span v-if="pwMismatch" class="field-error">Passwords do not match.</span>
             </label>
@@ -149,28 +165,26 @@
           </div>
 
           <div class="terms-section">
-            <div class="policy-links">
-              <button
-                type="button"
-                class="policy-link-btn"
-                :class="{ 'policy-link-btn-read': termsRead }"
-                @click="openPolicyModal('terms')"
-              >
-                {{ termsRead ? 'Terms of Use (Read)' : 'Open Terms of Use' }}
-              </button>
-              <button
-                type="button"
-                class="policy-link-btn"
-                :class="{ 'policy-link-btn-read': privacyRead }"
-                @click="openPolicyModal('privacy')"
-              >
-                {{ privacyRead ? 'Privacy Policy (Read)' : 'Open Privacy Policy' }}
-              </button>
-            </div>
-
             <label class="terms-wrap">
               <input type="checkbox" v-model="form.agreed" :disabled="!canAgree" />
-              <span>I have read and agree to the Terms of Use and Privacy Policy.</span>
+              <span>
+                I agree to the
+                <a
+                  href="#"
+                  class="inline-link strong"
+                  :style="termsRead ? 'color: var(--lnu-success)' : ''"
+                  @click.prevent="openPolicyModal('terms')"
+                  >Terms of Service</a
+                >
+                and
+                <a
+                  href="#"
+                  class="inline-link strong"
+                  :style="privacyRead ? 'color: var(--lnu-success)' : ''"
+                  @click.prevent="openPolicyModal('privacy')"
+                  >Privacy Policy</a
+                >.
+              </span>
             </label>
             <span v-if="!canAgree" class="terms-helper">Open and read both documents before agreeing.</span>
           </div>
@@ -263,7 +277,8 @@ const form = reactive({
   agreed: false,
 })
 
-const showPw = ref(false)
+const showPassword = ref(false)
+const showPasswordConfirmation = ref(false)
 const isLoading = ref(false)
 const apiError = ref('')
 const activePolicy = ref('')
@@ -323,7 +338,7 @@ const pwMismatch = computed(() =>
   form.password_confirmation.length > 0 && form.password !== form.password_confirmation,
 )
 const canAgree = computed(() => termsRead.value && privacyRead.value)
-const activePolicyTitle = computed(() => (activePolicy.value === 'terms' ? 'Terms of Use' : 'Privacy Policy'))
+const activePolicyTitle = computed(() => (activePolicy.value === 'terms' ? 'Terms of Service' : 'Privacy Policy'))
 const activePolicyContent = computed(() =>
   activePolicy.value === 'terms'
     ? legalTexts.terms_of_use_text
@@ -454,12 +469,12 @@ async function handleSubmit() {
   }
 
   if (!canAgree.value) {
-    apiError.value = 'Please open and read the Terms of Use and Privacy Policy first.'
+    apiError.value = 'Please open and read the Terms of Service and Privacy Policy first.'
     return
   }
 
   if (!form.agreed) {
-    apiError.value = 'Please confirm your agreement to the Terms of Use and Privacy Policy.'
+    apiError.value = 'Please confirm your agreement to the Terms of Service and Privacy Policy.'
     return
   }
 
@@ -487,6 +502,7 @@ async function handleSubmit() {
 <style scoped>
 .auth-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: minmax(320px, 460px) 1fr;
   background:
@@ -628,14 +644,15 @@ async function handleSubmit() {
   gap: 16px;
 }
 
+.auth-form-grid {
+  gap: 16px;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
-}
-
-.field-grid-three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
 }
 
 .field-group {
@@ -778,34 +795,6 @@ async function handleSubmit() {
 .terms-section {
   display: grid;
   gap: 10px;
-}
-
-.policy-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.policy-link-btn {
-  border: 1px solid rgba(13, 21, 71, 0.25);
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--lnu-navy);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 600;
-  padding: 7px 10px;
-  cursor: pointer;
-}
-
-.policy-link-btn:hover {
-  border-color: var(--lnu-navy);
-  background: rgba(26, 35, 126, 0.06);
-}
-
-.policy-link-btn-read {
-  border-color: rgba(46, 125, 50, 0.35);
-  color: var(--lnu-success);
-  background: rgba(46, 125, 50, 0.08);
 }
 
 .terms-helper {
@@ -983,9 +972,63 @@ async function handleSubmit() {
   }
 }
 
+@media (min-width: 981px) {
+  .auth-shell {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .auth-brand,
+  .auth-main {
+    min-height: 0;
+  }
+
+  .auth-brand {
+    padding: clamp(28px, 3vw, 42px) clamp(24px, 2.6vw, 34px);
+  }
+
+  .brand-card {
+    padding: clamp(24px, 2.1vw, 30px);
+  }
+
+  .brand-card h1 {
+    font-size: clamp(28px, 2vw, 31px);
+  }
+
+  .brand-copy {
+    margin-top: 12px;
+  }
+
+  .brand-list {
+    gap: 10px;
+    padding-top: clamp(20px, 3vh, 28px);
+  }
+
+  .auth-main {
+    padding: clamp(18px, 2.4vw, 42px) 24px;
+  }
+
+  .auth-card {
+    max-width: 620px;
+    padding: clamp(24px, 1.9vw, 32px);
+  }
+
+  .auth-form,
+  .auth-form-grid {
+    gap: 14px;
+  }
+
+  .terms-section {
+    gap: 8px;
+  }
+}
+
 @media (max-width: 980px) {
   .auth-shell {
     grid-template-columns: 1fr;
+    min-height: 100dvh;
+    height: auto;
   }
 
   .auth-brand {

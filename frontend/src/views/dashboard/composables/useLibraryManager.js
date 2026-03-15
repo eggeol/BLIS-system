@@ -35,6 +35,107 @@ export function useLibraryManager({
   const libraryPreviewWarnings = ref([])
   const digitalizedQuestions = ref([])
 
+  const groupedLibraryPreviewWarnings = computed(() => {
+    if (libraryPreviewWarnings.value.length === 0) return []
+
+    const warnings = libraryPreviewWarnings.value
+    const grouped = []
+
+    const parseWarning = (text) => {
+      const match = text.match(/^Question (\d+) (has no detected correct answer\.|has fewer than 2 options\.|does not match any option label\.)(.*?)$/)
+      if (match) {
+        return { isGroupable: true, number: parseInt(match[1], 10), suffix: match[2] + match[3] }
+      }
+      return { isGroupable: false, text }
+    }
+
+    let currentGroup = null
+
+    for (const warning of warnings) {
+      const parsed = parseWarning(warning)
+
+      if (!parsed.isGroupable) {
+        if (currentGroup) {
+          grouped.push(formatGroup(currentGroup, digitalizedQuestions.value.length))
+          currentGroup = null
+        }
+        grouped.push(warning)
+        continue
+      }
+
+      if (!currentGroup) {
+        currentGroup = { numbers: [parsed.number], suffix: parsed.suffix }
+      } else if (currentGroup.suffix === parsed.suffix) {
+        currentGroup.numbers.push(parsed.number)
+      } else {
+        grouped.push(formatGroup(currentGroup, digitalizedQuestions.value.length))
+        currentGroup = { numbers: [parsed.number], suffix: parsed.suffix }
+      }
+    }
+
+    if (currentGroup) {
+      grouped.push(formatGroup(currentGroup, digitalizedQuestions.value.length))
+    }
+
+    return grouped
+  })
+
+  function formatGroup(group, totalQuestionsLength) {
+    if (group.numbers.length === 1) {
+      return `Question ${group.numbers[0]} ${group.suffix}`
+    }
+
+    const nums = group.numbers.sort((a, b) => a - b)
+    const totalAffected = nums.length
+
+    // If 0 valid items at all
+    if (totalQuestionsLength > 0 && totalAffected === totalQuestionsLength) {
+      return `All ${totalQuestionsLength} questions ${group.suffix.replace(/^has /, 'have ')}`
+    }
+
+    // Dynamic inversion threshold: only flip the message if the number of VALID items
+    // is ≤ 20% of the total (minimum safety floor of 3).
+    // This ensures the inverted form only appears when it produces a noticeably shorter message.
+    // e.g.  20 items → threshold = 4   (≤4 valid → invert)
+    //       50 items → threshold = 10  (≤10 valid → invert)
+    //      100 items → threshold = 20  (≤20 valid → invert)
+    const invertThreshold = Math.max(3, Math.round(totalQuestionsLength * 0.2))
+
+    if (totalQuestionsLength > 0 && totalAffected > (totalQuestionsLength / 2)) {
+      const allItemNumbers = Array.from({ length: totalQuestionsLength }, (_, i) => i + 1)
+      const validItems = allItemNumbers.filter(n => !nums.includes(n))
+
+      if (validItems.length <= invertThreshold) {
+        let inverseSubject = 'answers'
+        if (group.suffix.includes('options')) inverseSubject = 'options'
+
+        return `Only Question${validItems.length > 1 ? 's' : ''} ${validItems.join(', ')} have valid ${inverseSubject}. (All others ${group.suffix.replace(/^has /, 'have ')})`
+      }
+    }
+
+    const ranges = buildRanges(nums)
+    return `Question${ranges.length > 1 || nums.length > 1 ? 's' : ''} ${ranges.join(', ')} ${group.suffix.replace(/^has /, 'have ')}`
+  }
+
+  function buildRanges(nums) {
+    if (nums.length === 0) return []
+    const ranges = []
+    let rangeStart = nums[0]
+    let rangeEnd = nums[0]
+
+    for (let i = 1; i < nums.length; i++) {
+      if (nums[i] === rangeEnd + 1) {
+        rangeEnd = nums[i]
+      } else {
+        ranges.push(rangeStart === rangeEnd ? `${rangeStart}` : `${rangeStart}-${rangeEnd}`)
+        rangeStart = nums[i]
+        rangeEnd = nums[i]
+      }
+    }
+    ranges.push(rangeStart === rangeEnd ? `${rangeStart}` : `${rangeStart}-${rangeEnd}`)
+    return ranges
+  }
+
   const libraryForm = reactive({
     questionName: '',
     subjectCategory: '',
@@ -109,9 +210,13 @@ export function useLibraryManager({
 
     if (!file) return
 
-    const isDocx = file.name.toLowerCase().endsWith('.docx')
+    const normalizedFileName = file.name.toLowerCase()
+    const isLegacyDoc = normalizedFileName.endsWith('.doc') && !normalizedFileName.endsWith('.docx')
+    const isDocx = normalizedFileName.endsWith('.docx')
     if (!isDocx) {
-      libraryParseError.value = 'Please upload a valid .docx file.'
+      libraryParseError.value = isLegacyDoc
+        ? 'Legacy .doc files are not supported. Open the file in Word or Google Docs and save it as .docx, then try again.'
+        : 'Please upload a valid .docx file.'
       libraryFileInputKey.value += 1
       return
     }
@@ -256,6 +361,7 @@ export function useLibraryManager({
     libraryQuestionBanks,
     selectedLibraryBank,
     libraryPreviewWarnings,
+    groupedLibraryPreviewWarnings,
     digitalizedQuestions,
     libraryForm,
     librarySubjectCategories,

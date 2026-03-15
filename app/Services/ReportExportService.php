@@ -273,7 +273,7 @@ class ReportExportService
                 'subject' => $exam->subject,
                 'total_items' => (int) $exam->total_items,
                 'duration_minutes' => (int) $exam->duration_minutes,
-                'delivery_mode' => $exam->delivery_mode,
+                'delivery_mode' => Exam::DELIVERY_MODE_OPEN_NAVIGATION,
             ],
             'room' => [
                 'id' => (int) $room->id,
@@ -576,7 +576,7 @@ class ReportExportService
                 'title' => $attempt->exam?->title,
                 'subject' => $attempt->exam?->subject,
                 'duration_minutes' => (int) ($attempt->exam?->duration_minutes ?? $attempt->duration_minutes),
-                'delivery_mode' => $attempt->exam?->delivery_mode,
+                'delivery_mode' => Exam::DELIVERY_MODE_OPEN_NAVIGATION,
             ],
             'room' => [
                 'id' => (int) ($attempt->room?->id ?? $attempt->room_id),
