@@ -37,8 +37,9 @@
         <article v-for="exam in exams" :key="exam.id" class="management-item">
           <div class="management-item-main">
             <strong>{{ exam.title }}</strong>
-            <p>{{ exam.question_bank?.subject || exam.subject || 'General' }} • {{ exam.total_items }} items • {{ exam.duration_minutes }} mins</p>
+            <p>{{ exam.total_items }} items • {{ exam.duration_minutes }} mins</p>
             <div class="management-inline">
+              <span class="pill success">{{ exam.question_bank?.subject || exam.subject || 'General' }}</span>
               <span class="pill navy">{{ exam.rooms_count ?? exam.rooms?.length ?? 0 }} room(s)</span>
               <span class="pill neutral">{{ examDeliveryModeLabel(exam.delivery_mode) }}</span>
               <span class="pill" :class="exam.one_take_only ? 'success' : 'neutral'">
@@ -101,12 +102,19 @@
               <span class="field-label">Question Set</span>
               <select v-model="examForm.question_bank_id" class="text-input">
                 <option :value="null">No question set linked</option>
-                <option v-for="bank in examQuestionBanks" :key="bank.id" :value="bank.id">
-                  {{ bank.title }} • {{ bank.total_items }} items
-                </option>
+                <optgroup v-for="group in groupedExamQuestionBanks" :key="group.label" :label="group.label">
+                  <option v-for="bank in group.banks" :key="bank.id" :value="bank.id">
+                    {{ bank.title }} • {{ bank.total_items }} items
+                  </option>
+                </optgroup>
               </select>
               <small v-if="examQuestionBanks.length === 0" class="muted">No saved question sets yet. Add one from Library first.</small>
               <small class="muted">Link a question set so students can attempt this exam.</small>
+              <div v-if="selectedQuestionBank" class="management-inline exam-question-bank-summary">
+                <span class="pill success">{{ selectedQuestionBank.subject || 'General' }}</span>
+                <span class="pill neutral">{{ selectedQuestionBank.total_items }} items</span>
+                <span class="pill navy">{{ selectedQuestionBank.title }}</span>
+              </div>
             </label>
 
             <div class="field-stack">
@@ -114,11 +122,21 @@
               <div class="exam-schedule-row">
                 <label class="field-stack">
                   <span class="field-label">Start</span>
-                  <input v-model="examForm.schedule_start_at" type="datetime-local" class="text-input" />
+                  <input
+                    v-model="examForm.schedule_start_at"
+                    type="datetime-local"
+                    class="text-input"
+                    :min="createExamScheduleMin || undefined"
+                  />
                 </label>
                 <label class="field-stack">
                   <span class="field-label">End</span>
-                  <input v-model="examForm.schedule_end_at" type="datetime-local" class="text-input" />
+                  <input
+                    v-model="examForm.schedule_end_at"
+                    type="datetime-local"
+                    class="text-input"
+                    :min="createExamScheduleEndMin || undefined"
+                  />
                 </label>
               </div>
               <small class="muted">Leave both blank for always available exams. If set, students can only take exams inside this window.</small>
@@ -207,6 +225,10 @@ const {
   exams,
   manageableRooms,
   examQuestionBanks,
+  groupedExamQuestionBanks,
+  selectedQuestionBank,
+  createExamScheduleMin,
+  createExamScheduleEndMin,
   examLoading,
   examSaving,
   examError,

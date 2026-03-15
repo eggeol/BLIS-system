@@ -259,8 +259,16 @@
             <span>Preparing exam attempt...</span>
           </div>
 
-          <div v-else-if="studentExamAttempt" class="exam-attempt-layout">
-            <aside class="exam-attempt-sidebar" :class="{ 'is-collapsed': examAttemptSidebarCollapsed }">
+          <div
+            v-else-if="studentExamAttempt"
+            class="exam-attempt-layout"
+            :class="{ 'is-results-view': isStudentExamResultSummaryVisible }"
+          >
+            <aside
+              v-if="!isStudentExamResultSummaryVisible"
+              class="exam-attempt-sidebar"
+              :class="{ 'is-collapsed': examAttemptSidebarCollapsed }"
+            >
               <div class="exam-status-legend">
                 <template v-if="!isStudentExamSubmitted">
                   <span class="legend-item"><i class="legend-dot current" /> Current</span>
@@ -292,7 +300,68 @@
             </aside>
 
             <section class="exam-attempt-main">
-              <article v-if="currentStudentExamQuestion" class="exam-attempt-card immersive">
+              <article v-if="isStudentExamResultSummaryVisible" class="exam-result-card">
+                <section class="exam-result-hero" :class="`is-${studentExamResultSummary.tone}`">
+                  <div class="exam-result-copy">
+                    <div class="exam-result-badge">
+                      <CheckCircle2 v-if="studentExamResultSummary.score >= 75" :size="18" />
+                      <AlertCircle v-else :size="18" />
+                      <span>{{ studentExamResultSummary.label }}</span>
+                    </div>
+                    <h4>{{ studentExamResultSummary.headline }}</h4>
+                    <p>{{ studentExamResultSummary.message }}</p>
+                  </div>
+
+                  <div class="exam-result-score-panel">
+                    <span class="exam-result-score-caption">Final Score</span>
+                    <strong class="exam-result-score-value">{{ studentExamResultSummary.scoreDisplay }}%</strong>
+                    <span class="exam-result-score-subtitle">
+                      {{ studentExamResultSummary.correct }}/{{ studentExamResultSummary.total }} correct
+                    </span>
+                  </div>
+                </section>
+
+                <div class="exam-result-stats">
+                  <article class="exam-result-stat">
+                    <span>Answered</span>
+                    <strong>{{ studentExamResultSummary.answered }}/{{ studentExamResultSummary.total }}</strong>
+                    <small>Completed items</small>
+                  </article>
+                  <article class="exam-result-stat">
+                    <span>Correct</span>
+                    <strong>{{ studentExamResultSummary.correct }}</strong>
+                    <small>Right answers</small>
+                  </article>
+                  <article class="exam-result-stat">
+                    <span>Incorrect</span>
+                    <strong>{{ studentExamResultSummary.incorrect }}</strong>
+                    <small>Wrong answers</small>
+                  </article>
+                  <article class="exam-result-stat">
+                    <span>Missed</span>
+                    <strong>{{ studentExamResultSummary.missed }}</strong>
+                    <small>Unanswered items</small>
+                  </article>
+                </div>
+
+                <div class="exam-result-meta">
+                  <span>Submitted: {{ studentExamResultSummary.submittedAtText }}</span>
+                  <span v-if="selectedStudentExam?.duration_minutes">
+                    Time allowed: {{ selectedStudentExam.duration_minutes }} minutes
+                  </span>
+                </div>
+
+                <div class="exam-result-actions">
+                  <button type="button" class="ghost-btn" @click="openStudentExamReview">
+                    Review Answers
+                  </button>
+                  <button type="button" class="primary-btn" @click="handleExamAttemptCloseClick">
+                    Done
+                  </button>
+                </div>
+              </article>
+
+              <article v-else-if="currentStudentExamQuestion" class="exam-attempt-card immersive">
                 <header class="surface-head">
                   <h4>Question {{ currentStudentExamQuestion.item_number }}</h4>
                   <span class="pill neutral">{{ currentStudentExamQuestion.question_type.replace('_', ' ') }}</span>
@@ -339,11 +408,38 @@
                     <span>{{ option.label }}. {{ option.text }}</span>
                   </label>
                 </div>
+
+                <div
+                  v-if="isStudentExamSubmitted"
+                  class="exam-question-review-panel"
+                  :class="`is-${studentQuestionReviewStatus(currentStudentExamQuestion)}`"
+                >
+                  <div class="exam-question-review-copy">
+                    <strong>{{ studentQuestionReviewLabel(currentStudentExamQuestion) }}</strong>
+                    <p>{{ studentQuestionReviewMessage(currentStudentExamQuestion) }}</p>
+                  </div>
+                  <p
+                    v-if="studentQuestionCorrectAnswerText(currentStudentExamQuestion)"
+                    class="exam-question-review-answer"
+                  >
+                    Correct answer:
+                    <span>{{ studentQuestionCorrectAnswerText(currentStudentExamQuestion) }}</span>
+                  </p>
+                </div>
               </article>
 
-              <div class="exam-attempt-footer">
+              <div v-if="!isStudentExamResultSummaryVisible" class="exam-attempt-footer">
                 <button
-                  v-if="!isStudentExamSubmitted && currentStudentExamQuestion && isStudentOpenNavigationMode"
+                  v-if="isStudentExamSubmitted"
+                  type="button"
+                  class="ghost-btn"
+                  @click="showStudentExamResultSummary"
+                >
+                  Result Summary
+                </button>
+
+                <button
+                  v-else-if="currentStudentExamQuestion && isStudentOpenNavigationMode"
                   type="button"
                   class="bookmark-toggle-btn"
                   :class="{ 'is-bookmarked': currentStudentExamQuestion.is_bookmarked, 'is-loading': studentExamBookmarking }"
@@ -543,9 +639,11 @@ const {
   currentStudentExamQuestion,
   currentQuestionStem,
   isStudentExamSubmitted,
+  isStudentExamResultSummaryVisible,
   isStudentOpenNavigationMode,
   isCurrentQuestionInputLocked,
   studentExamUnansweredCount,
+  studentExamResultSummary,
   displayMemberRole,
   canStudentOpenExam,
   isStudentExamInProgress,
@@ -555,11 +653,17 @@ const {
   studentExamAvailabilityText,
   examOptionCardClass,
   questionPaletteClass,
+  studentQuestionReviewStatus,
+  studentQuestionReviewLabel,
+  studentQuestionReviewMessage,
+  studentQuestionCorrectAnswerText,
   toggleExamAttemptSidebar,
   openExamSimulation,
+  openStudentExamReview,
   goToStudentExamQuestionIndex,
   goToStudentExamQuestion,
   handleExamAttemptCloseClick,
+  showStudentExamResultSummary,
   closeStudentExamExitConfirm,
   confirmStudentExamExit,
   openStudentExamSubmitConfirm,

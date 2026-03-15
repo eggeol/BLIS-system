@@ -139,6 +139,7 @@ async function handleSubmit() {
 <style scoped>
 .auth-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: minmax(320px, 460px) 1fr;
   background:
@@ -431,9 +432,53 @@ async function handleSubmit() {
   }
 }
 
+@media (min-width: 981px) {
+  .auth-shell {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .auth-brand,
+  .auth-main {
+    min-height: 0;
+  }
+
+  .auth-brand {
+    padding: clamp(28px, 3vw, 42px) clamp(24px, 2.6vw, 34px);
+  }
+
+  .brand-card {
+    padding: clamp(24px, 2.1vw, 30px);
+  }
+
+  .brand-card h1 {
+    font-size: clamp(28px, 2vw, 31px);
+  }
+
+  .brand-copy {
+    margin-top: 12px;
+  }
+
+  .brand-list {
+    gap: 10px;
+    padding-top: clamp(20px, 3vh, 28px);
+  }
+
+  .auth-main {
+    padding: clamp(24px, 3vw, 42px) 24px;
+  }
+
+  .auth-card {
+    padding: clamp(24px, 2vw, 32px);
+  }
+}
+
 @media (max-width: 980px) {
   .auth-shell {
     grid-template-columns: 1fr;
+    min-height: 100dvh;
+    height: auto;
   }
 
   .auth-brand {
@@ -449,4 +494,3 @@ async function handleSubmit() {
   }
 }
 </style>
-

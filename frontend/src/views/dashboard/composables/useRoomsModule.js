@@ -123,6 +123,7 @@ export function useRoomsModule({ mode = 'student' } = {}) {
   const showStudentExitConfirmModal = ref(false)
   const selectedStudentExam = ref(null)
   const studentExamAttempt = ref(null)
+  const studentExamReviewVisible = ref(false)
   const studentExamQuestions = ref([])
   const studentExamCurrentIndex = ref(0)
   const isExamMobileViewport = ref(false)
@@ -170,6 +171,10 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     String(studentExamAttempt.value?.status ?? '') === 'submitted'
   ))
 
+  const isStudentExamResultSummaryVisible = computed(() => (
+    isStudentExamSubmitted.value && !studentExamReviewVisible.value
+  ))
+
   const isStudentOpenNavigationMode = computed(() => (
     !isStudentExamSubmitted.value
   ))
@@ -184,6 +189,56 @@ export function useRoomsModule({ mode = 'student' } = {}) {
   const studentExamUnansweredCount = computed(() => (
     studentExamQuestions.value.filter((question) => !questionHasAnswer(question)).length
   ))
+
+  const studentExamResultSummary = computed(() => {
+    const total = Math.max(0, Number(studentExamAttempt.value?.total_items ?? studentExamQuestions.value.length))
+    const answered = Math.max(0, Number(studentExamAttempt.value?.answered_count ?? 0))
+    const correct = Math.max(0, Number(studentExamAttempt.value?.correct_answers ?? 0))
+    const incorrect = Math.max(answered - correct, 0)
+    const missed = Math.max(total - answered, 0)
+    const rawScore = Number(studentExamAttempt.value?.score_percent ?? 0)
+    const score = Number.isFinite(rawScore) ? rawScore : 0
+    const submittedAtText = studentExamAttempt.value?.submitted_at
+      ? formatDateTime(studentExamAttempt.value.submitted_at)
+      : 'n/a'
+
+    let tone = 'needs-work'
+    let label = 'Needs more review'
+    let headline = 'Keep practicing and review the missed items.'
+    let message = 'Focus on the questions you missed, then review the correct answers before your next attempt.'
+
+    if (score >= 90) {
+      tone = 'excellent'
+      label = 'Outstanding result'
+      headline = 'Strong finish.'
+      message = 'You cleared this exam with a high score. Review the full breakdown if you want to confirm every item.'
+    } else if (score >= 75) {
+      tone = 'passing'
+      label = 'Passing result'
+      headline = 'You passed this attempt.'
+      message = 'Your score is in a good range. Check the answer review for the few items that still need cleanup.'
+    } else if (score >= 60) {
+      tone = 'review'
+      label = 'Close, but needs review'
+      headline = 'You are within reach.'
+      message = 'You answered a fair share correctly, but there are still several items to revisit before the next attempt.'
+    }
+
+    return {
+      total,
+      answered,
+      correct,
+      incorrect,
+      missed,
+      score,
+      scoreDisplay: score.toFixed(2),
+      submittedAtText,
+      tone,
+      label,
+      headline,
+      message,
+    }
+  })
 
   const liveBoardRoom = computed(() => {
     const roomId = Number(liveBoardRoomId.value)
@@ -462,13 +517,67 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     studentAnswerDraft.answer_text = current.answer?.answer_text ?? ''
   }
 
+  function studentQuestionReviewStatus(question) {
+    if (!question) return 'missed'
+
+    if (!questionHasAnswer(question)) {
+      return 'missed'
+    }
+
+    if (question.answer?.is_correct === true) {
+      return 'correct'
+    }
+
+    if (question.answer?.is_correct === false) {
+      return 'incorrect'
+    }
+
+    return 'answered'
+  }
+
+  function studentQuestionReviewLabel(question) {
+    const status = studentQuestionReviewStatus(question)
+
+    if (status === 'correct') return 'Correct answer'
+    if (status === 'incorrect') return 'Incorrect answer'
+    if (status === 'missed') return 'No answer submitted'
+    return 'Answer submitted'
+  }
+
+  function studentQuestionReviewMessage(question) {
+    const status = studentQuestionReviewStatus(question)
+
+    if (status === 'correct') return 'You answered this item correctly.'
+    if (status === 'incorrect') return 'Your selected answer did not match the answer key.'
+    if (status === 'missed') return 'This item was left unanswered in the submitted attempt.'
+    return 'This item was submitted and is ready for review.'
+  }
+
+  function studentQuestionCorrectAnswerText(question) {
+    const label = String(question?.correct_answer?.label ?? '').trim()
+    const text = String(question?.correct_answer?.text ?? '').trim()
+
+    if (label && text) return `${label}. ${text}`
+    if (text) return text
+    if (label) return label
+    return ''
+  }
+
   function examOptionCardClass(option) {
+    const currentQuestion = currentStudentExamQuestion.value
     const optionId = Number(option?.id ?? 0)
     const selectedOptionId = Number(studentAnswerDraft.selected_option_id ?? 0)
     const isSelected = optionId > 0 && selectedOptionId > 0 && optionId === selectedOptionId
+    const reviewStatus = studentQuestionReviewStatus(currentQuestion)
+    const isCorrectOption = isStudentExamSubmitted.value && option?.is_correct === true
+    const isIncorrectSelection = isStudentExamSubmitted.value && isSelected && reviewStatus === 'incorrect'
+    const isNeutralSubmittedOption = isStudentExamSubmitted.value && !isSelected && !isCorrectOption
 
     return {
       selected: isSelected,
+      'submitted-correct': isCorrectOption,
+      'submitted-incorrect': isIncorrectSelection,
+      'submitted-neutral': isNeutralSubmittedOption,
     }
   }
 
@@ -510,6 +619,10 @@ export function useRoomsModule({ mode = 'student' } = {}) {
 
     if (isStudentExamSubmitted.value) {
       if (!hasAnswer) return 'post-missed'
+
+      if (question.answer?.is_correct === true) return 'post-correct'
+      if (question.answer?.is_correct === false) return 'post-incorrect'
+
       return 'post-answered'
     }
 
@@ -529,12 +642,15 @@ export function useRoomsModule({ mode = 'student' } = {}) {
       'pre-answered': status === 'pre-answered',
       'pre-blank': status === 'pre-blank',
       'pre-pending': status === 'pre-pending',
+      'post-correct': status === 'post-correct',
+      'post-incorrect': status === 'post-incorrect',
       'post-missed': status === 'post-missed',
       'post-answered': status === 'post-answered',
     }
   }
 
   function applyStudentAttemptPayload(payload, preferredQuestionId = null) {
+    const nextAttemptStatus = String(payload?.attempt?.status ?? '').toLowerCase()
     const previousVisitedQuestionIds = [...studentExamVisitedQuestionIds.value]
     const examPayload = payload?.exam
       ? {
@@ -546,6 +662,8 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     studentExamAttempt.value = payload?.attempt ?? null
     selectedStudentExam.value = examPayload ?? selectedStudentExam.value
     studentExamQuestions.value = payload?.questions ?? []
+    studentExamReviewVisible.value = nextAttemptStatus === 'submitted' ? false : studentExamReviewVisible.value
+    syncSelectedRoomAssignedExam(examPayload, payload?.attempt ?? null)
 
     const answeredQuestionIds = studentExamQuestions.value
       .filter((question) => questionHasAnswer(question))
@@ -571,6 +689,43 @@ export function useRoomsModule({ mode = 'student' } = {}) {
 
     startStudentExamTimer(payload?.attempt?.remaining_seconds)
     syncStudentAnswerDraft()
+  }
+
+  function syncSelectedRoomAssignedExam(examPayload, attemptPayload) {
+    if (!selectedRoom.value || !Array.isArray(selectedRoom.value.assigned_exams)) return
+
+    const examId = Number(examPayload?.id ?? 0)
+    if (!Number.isFinite(examId) || examId < 1) return
+
+    selectedRoom.value = {
+      ...selectedRoom.value,
+      assigned_exams: selectedRoom.value.assigned_exams.map((exam) => {
+        if (Number(exam.id) !== examId) {
+          return exam
+        }
+
+        const maxAttempts = Number(exam.student_max_attempts ?? studentMaxAttempts(exam))
+        const currentSubmittedAttempts = Number(exam.student_submitted_attempts ?? 0)
+        const wasAlreadySubmitted = String(exam.student_attempt_state ?? '').toLowerCase() === 'submitted'
+        const nextSubmittedAttempts = attemptPayload?.status === 'submitted'
+          ? Math.max(currentSubmittedAttempts + (wasAlreadySubmitted ? 0 : 1), currentSubmittedAttempts || 1)
+          : currentSubmittedAttempts
+        const attemptsRemaining = Math.max(0, maxAttempts - nextSubmittedAttempts)
+
+        return {
+          ...exam,
+          ...examPayload,
+          delivery_mode: normalizeExamDeliveryMode(examPayload?.delivery_mode ?? exam.delivery_mode),
+          student_attempt_state: attemptPayload?.status ?? exam.student_attempt_state ?? 'not_started',
+          student_attempt_id: attemptPayload?.id ?? exam.student_attempt_id ?? null,
+          student_submitted_at: attemptPayload?.submitted_at ?? exam.student_submitted_at ?? null,
+          student_submitted_attempts: nextSubmittedAttempts,
+          student_max_attempts: maxAttempts,
+          student_attempts_remaining: attemptsRemaining,
+          student_can_start_attempt: attemptsRemaining > 0,
+        }
+      }),
+    }
   }
 
   async function openExamSimulation(exam) {
@@ -633,6 +788,7 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     showStudentExitConfirmModal.value = false
     selectedStudentExam.value = null
     studentExamAttempt.value = null
+    studentExamReviewVisible.value = false
     studentExamQuestions.value = []
     studentExamCurrentIndex.value = 0
     studentExamLoading.value = false
@@ -672,6 +828,34 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     showStudentSubmitConfirmModal.value = false
     showStudentExitConfirmModal.value = true
     studentExamError.value = ''
+  }
+
+  function openStudentExamReview() {
+    if (!isStudentExamSubmitted.value || studentExamQuestions.value.length === 0) return
+
+    const preferredIndex = studentExamQuestions.value.findIndex((question) => {
+      const status = studentQuestionReviewStatus(question)
+      return status === 'incorrect' || status === 'missed'
+    })
+
+    studentExamReviewVisible.value = true
+    studentExamCurrentIndex.value = preferredIndex >= 0 ? preferredIndex : 0
+
+    if (!isExamMobileViewport.value) {
+      examAttemptSidebarCollapsed.value = false
+    }
+
+    syncStudentAnswerDraft()
+  }
+
+  function showStudentExamResultSummary() {
+    if (!isStudentExamSubmitted.value) return
+
+    studentExamReviewVisible.value = false
+
+    if (isExamMobileViewport.value) {
+      examAttemptSidebarCollapsed.value = true
+    }
   }
 
   function closeStudentExamExitConfirm() {
@@ -1284,6 +1468,7 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     showStudentExitConfirmModal,
     selectedStudentExam,
     studentExamAttempt,
+    studentExamReviewVisible,
     studentExamQuestions,
     studentExamCurrentIndex,
     examAttemptSidebarCollapsed,
@@ -1298,9 +1483,11 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     currentStudentExamQuestion,
     currentQuestionStem,
     isStudentExamSubmitted,
+    isStudentExamResultSummaryVisible,
     isStudentOpenNavigationMode,
     isCurrentQuestionInputLocked,
     studentExamUnansweredCount,
+    studentExamResultSummary,
     displayMemberRole,
     canRemoveRoomMember,
     canStudentOpenExam,
@@ -1311,11 +1498,17 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     studentExamAvailabilityText,
     examOptionCardClass,
     questionPaletteClass,
+    studentQuestionReviewStatus,
+    studentQuestionReviewLabel,
+    studentQuestionReviewMessage,
+    studentQuestionCorrectAnswerText,
     toggleExamAttemptSidebar,
     openExamSimulation,
+    openStudentExamReview,
     goToStudentExamQuestionIndex,
     goToStudentExamQuestion,
     handleExamAttemptCloseClick,
+    showStudentExamResultSummary,
     closeStudentExamExitConfirm,
     confirmStudentExamExit,
     openStudentExamSubmitConfirm,

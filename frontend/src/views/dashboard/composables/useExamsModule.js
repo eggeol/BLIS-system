@@ -1,4 +1,4 @@
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useDashboardDataServices } from './useDashboardDataServices'
 import { normalizeExamDeliveryMode } from './useDashboardFormatters'
 
@@ -25,6 +25,37 @@ function toExamSchedulePayload(value) {
   if (Number.isNaN(date.getTime())) return null
 
   return date.toISOString()
+}
+
+function currentDateTimeLocalValue() {
+  const now = new Date()
+  now.setSeconds(0, 0)
+  return toDateTimeLocalValue(now.toISOString())
+}
+
+function currentDayStartLocalValue() {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return toDateTimeLocalValue(today.toISOString())
+}
+
+function categoryLabel(value) {
+  const normalized = String(value ?? '').trim()
+  return normalized || 'General'
+}
+
+function compareCategoryThenName(left, right) {
+  const leftCategory = categoryLabel(left?.subject)
+  const rightCategory = categoryLabel(right?.subject)
+
+  if (leftCategory !== rightCategory) {
+    return leftCategory.localeCompare(rightCategory)
+  }
+
+  const leftTitle = String(left?.title ?? '').trim()
+  const rightTitle = String(right?.title ?? '').trim()
+
+  return leftTitle.localeCompare(rightTitle)
 }
 
 export function useExamsModule() {
@@ -54,6 +85,48 @@ export function useExamsModule() {
     room_ids: [],
   })
 
+  const groupedExamQuestionBanks = computed(() => {
+    const groups = new Map()
+
+    examQuestionBanks.value.forEach((bank) => {
+      const label = categoryLabel(bank.subject)
+      if (!groups.has(label)) {
+        groups.set(label, [])
+      }
+
+      groups.get(label).push(bank)
+    })
+
+    return Array.from(groups.entries())
+      .sort(([leftLabel], [rightLabel]) => leftLabel.localeCompare(rightLabel))
+      .map(([label, banks]) => ({
+        label,
+        banks: [...banks].sort(compareCategoryThenName),
+      }))
+  })
+
+  const selectedQuestionBank = computed(() => (
+    examQuestionBanks.value.find((bank) => bank.id === Number(examForm.question_bank_id)) ?? null
+  ))
+
+  const createExamScheduleMin = computed(() => (
+    examForm.id ? '' : currentDayStartLocalValue()
+  ))
+
+  const createExamScheduleEndMin = computed(() => {
+    if (examForm.id) return ''
+
+    const currentDayMin = createExamScheduleMin.value
+
+    if (!examForm.schedule_start_at) {
+      return currentDayMin
+    }
+
+    return examForm.schedule_start_at > currentDayMin
+      ? examForm.schedule_start_at
+      : currentDayMin
+  })
+
   function resetExamForm() {
     examForm.id = null
     examForm.title = ''
@@ -61,7 +134,7 @@ export function useExamsModule() {
     examForm.question_bank_id = null
     examForm.total_items = 60
     examForm.duration_minutes = 90
-    examForm.schedule_start_at = ''
+    examForm.schedule_start_at = currentDateTimeLocalValue()
     examForm.schedule_end_at = ''
     examForm.one_take_only = false
     examForm.shuffle_questions = false
@@ -130,7 +203,7 @@ export function useExamsModule() {
         title: bank.title,
         subject: bank.subject,
         total_items: Number(bank.total_items ?? bank.questions_count ?? 0),
-      }))
+      })).sort(compareCategoryThenName)
     } catch (error) {
       examQuestionBanks.value = []
     }
@@ -148,12 +221,17 @@ export function useExamsModule() {
         fetchExamQuestionBanks(),
       ])
 
-      exams.value = (examData.exams ?? []).map((exam) => ({
-        ...exam,
-        schedule_start_at: exam.schedule_start_at ?? exam.scheduled_at ?? null,
-        schedule_end_at: exam.schedule_end_at ?? null,
-        delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
-      }))
+      exams.value = (examData.exams ?? [])
+        .map((exam) => ({
+          ...exam,
+          schedule_start_at: exam.schedule_start_at ?? exam.scheduled_at ?? null,
+          schedule_end_at: exam.schedule_end_at ?? null,
+          delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
+        }))
+        .sort((left, right) => compareCategoryThenName(
+          { subject: left.question_bank?.subject ?? left.subject, title: left.title },
+          { subject: right.question_bank?.subject ?? right.subject, title: right.title },
+        ))
     } catch (error) {
       examError.value = firstApiError(error, 'Unable to load exams right now.')
     } finally {
@@ -175,6 +253,24 @@ export function useExamsModule() {
       examError.value = 'Please provide valid start/end schedule values.'
       examSaving.value = false
       return
+    }
+
+    if (!examForm.id) {
+      const currentDayStart = new Date()
+      currentDayStart.setHours(0, 0, 0, 0)
+      const currentDayStartMs = currentDayStart.getTime()
+
+      if (scheduleStartAt && new Date(scheduleStartAt).getTime() < currentDayStartMs) {
+        examError.value = 'Schedule start cannot be before the current day.'
+        examSaving.value = false
+        return
+      }
+
+      if (scheduleEndAt && new Date(scheduleEndAt).getTime() < currentDayStartMs) {
+        examError.value = 'Schedule end cannot be before the current day.'
+        examSaving.value = false
+        return
+      }
     }
 
     if (scheduleStartAt && scheduleEndAt && new Date(scheduleEndAt).getTime() < new Date(scheduleStartAt).getTime()) {
@@ -249,6 +345,10 @@ export function useExamsModule() {
     exams,
     manageableRooms,
     examQuestionBanks,
+    groupedExamQuestionBanks,
+    selectedQuestionBank,
+    createExamScheduleMin,
+    createExamScheduleEndMin,
     examLoading,
     examSaving,
     examError,

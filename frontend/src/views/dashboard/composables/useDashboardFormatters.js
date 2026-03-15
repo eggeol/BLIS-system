@@ -2,6 +2,20 @@ function padTimePart(part) {
   return String(part).padStart(2, '0')
 }
 
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+})
+
+const CLOCK_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+})
+
 export function normalizeExamDeliveryMode(mode) {
   return 'open_navigation'
 }
@@ -23,21 +37,14 @@ export function formatDateTime(value) {
   const parsed = parseDateTime(value)
   if (!parsed) return 'n/a'
 
-  const year = parsed.getFullYear()
-  const month = padTimePart(parsed.getMonth() + 1)
-  const day = padTimePart(parsed.getDate())
-  const hour = padTimePart(parsed.getHours())
-  const minute = padTimePart(parsed.getMinutes())
-  const second = padTimePart(parsed.getSeconds())
-
-  return `${year}-${month}-${day} ${hour}:${minute}:${second}`
+  return DATE_TIME_FORMATTER.format(parsed)
 }
 
 export function formatClockTime(value) {
   const parsed = parseDateTime(value)
   if (!parsed) return 'n/a'
 
-  return `${padTimePart(parsed.getHours())}:${padTimePart(parsed.getMinutes())}:${padTimePart(parsed.getSeconds())}`
+  return CLOCK_TIME_FORMATTER.format(parsed)
 }
 
 export function formatExamSchedule(startValue, endValue = null) {

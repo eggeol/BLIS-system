@@ -31,63 +31,67 @@
         <div v-if="apiError" class="alert alert-danger">{{ apiError }}</div>
 
         <form class="auth-form" @submit.prevent="handleSubmit">
-          <label class="field-group">
-            <span class="field-label">First name</span>
-            <div class="field-wrap">
-              <UserRound :size="17" class="field-icon" />
-              <input
-                v-model="form.first_name"
-                type="text"
-                class="field-input"
-                placeholder="e.g. Juan"
-                autocomplete="given-name"
-              />
-            </div>
-          </label>
+          <div class="field-grid auth-form-grid">
+            <label class="field-group">
+              <span class="field-label">First name</span>
+              <div class="field-wrap">
+                <UserRound :size="17" class="field-icon" />
+                <input
+                  v-model="form.first_name"
+                  type="text"
+                  class="field-input"
+                  placeholder="e.g. Juan"
+                  autocomplete="given-name"
+                />
+              </div>
+            </label>
 
-          <label class="field-group">
-            <span class="field-label">Middle name (optional)</span>
-            <div class="field-wrap">
-              <UserRound :size="17" class="field-icon" />
-              <input
-                v-model="form.middle_name"
-                type="text"
-                class="field-input"
-                placeholder="e.g. Santos"
-                autocomplete="additional-name"
-              />
-            </div>
-          </label>
+            <label class="field-group">
+              <span class="field-label">Middle name (optional)</span>
+              <div class="field-wrap">
+                <UserRound :size="17" class="field-icon" />
+                <input
+                  v-model="form.middle_name"
+                  type="text"
+                  class="field-input"
+                  placeholder="e.g. Santos"
+                  autocomplete="additional-name"
+                />
+              </div>
+            </label>
+          </div>
 
-          <label class="field-group">
-            <span class="field-label">Last name</span>
-            <div class="field-wrap">
-              <UserRound :size="17" class="field-icon" />
-              <input
-                v-model="form.last_name"
-                type="text"
-                class="field-input"
-                placeholder="e.g. Dela Cruz"
-                autocomplete="family-name"
-              />
-            </div>
-          </label>
+          <div class="field-grid auth-form-grid">
+            <label class="field-group">
+              <span class="field-label">Last name</span>
+              <div class="field-wrap">
+                <UserRound :size="17" class="field-icon" />
+                <input
+                  v-model="form.last_name"
+                  type="text"
+                  class="field-input"
+                  placeholder="e.g. Dela Cruz"
+                  autocomplete="family-name"
+                />
+              </div>
+            </label>
 
-          <label class="field-group">
-            <span class="field-label">Student ID</span>
-            <div class="field-wrap">
-              <Hash :size="17" class="field-icon" />
-              <input
-                v-model="form.student_id"
-                type="text"
-                class="field-input"
-                placeholder="e.g. 2301290"
-                inputmode="numeric"
-                pattern="[0-9]*"
-                autocomplete="off"
-              />
-            </div>
-          </label>
+            <label class="field-group">
+              <span class="field-label">Student ID</span>
+              <div class="field-wrap">
+                <Hash :size="17" class="field-icon" />
+                <input
+                  v-model="form.student_id"
+                  type="text"
+                  class="field-input"
+                  placeholder="e.g. 2301290"
+                  inputmode="numeric"
+                  pattern="[0-9]*"
+                  autocomplete="off"
+                />
+              </div>
+            </label>
+          </div>
 
           <label class="field-group">
             <span class="field-label">Email address</span>
@@ -110,13 +114,18 @@
                 <LockKeyhole :size="17" class="field-icon" />
                 <input
                   v-model="form.password"
-                  :type="showPw ? 'text' : 'password'"
+                  :type="showPassword ? 'text' : 'password'"
                   class="field-input field-input-with-toggle"
                   placeholder="Min. 8 characters"
                   autocomplete="new-password"
                 />
-                <button type="button" class="field-toggle" @click="showPw = !showPw">
-                  <EyeOff v-if="showPw" :size="16" />
+                <button
+                  type="button"
+                  class="field-toggle"
+                  aria-label="Toggle password visibility"
+                  @click="showPassword = !showPassword"
+                >
+                  <EyeOff v-if="showPassword" :size="16" />
                   <Eye v-else :size="16" />
                 </button>
               </div>
@@ -128,12 +137,21 @@
                 <LockKeyhole :size="17" class="field-icon" />
                 <input
                   v-model="form.password_confirmation"
-                  :type="showPw ? 'text' : 'password'"
-                  class="field-input"
+                  :type="showPasswordConfirmation ? 'text' : 'password'"
+                  class="field-input field-input-with-toggle"
                   :class="{ 'field-input-error': pwMismatch }"
                   placeholder="Re-enter password"
                   autocomplete="new-password"
                 />
+                <button
+                  type="button"
+                  class="field-toggle"
+                  aria-label="Toggle confirm password visibility"
+                  @click="showPasswordConfirmation = !showPasswordConfirmation"
+                >
+                  <EyeOff v-if="showPasswordConfirmation" :size="16" />
+                  <Eye v-else :size="16" />
+                </button>
               </div>
               <span v-if="pwMismatch" class="field-error">Passwords do not match.</span>
             </label>
@@ -259,7 +277,8 @@ const form = reactive({
   agreed: false,
 })
 
-const showPw = ref(false)
+const showPassword = ref(false)
+const showPasswordConfirmation = ref(false)
 const isLoading = ref(false)
 const apiError = ref('')
 const activePolicy = ref('')
@@ -483,6 +502,7 @@ async function handleSubmit() {
 <style scoped>
 .auth-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: minmax(320px, 460px) 1fr;
   background:
@@ -621,6 +641,10 @@ async function handleSubmit() {
 .auth-form {
   margin-top: 20px;
   display: grid;
+  gap: 16px;
+}
+
+.auth-form-grid {
   gap: 16px;
 }
 
@@ -948,9 +972,63 @@ async function handleSubmit() {
   }
 }
 
+@media (min-width: 981px) {
+  .auth-shell {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .auth-brand,
+  .auth-main {
+    min-height: 0;
+  }
+
+  .auth-brand {
+    padding: clamp(28px, 3vw, 42px) clamp(24px, 2.6vw, 34px);
+  }
+
+  .brand-card {
+    padding: clamp(24px, 2.1vw, 30px);
+  }
+
+  .brand-card h1 {
+    font-size: clamp(28px, 2vw, 31px);
+  }
+
+  .brand-copy {
+    margin-top: 12px;
+  }
+
+  .brand-list {
+    gap: 10px;
+    padding-top: clamp(20px, 3vh, 28px);
+  }
+
+  .auth-main {
+    padding: clamp(18px, 2.4vw, 42px) 24px;
+  }
+
+  .auth-card {
+    max-width: 620px;
+    padding: clamp(24px, 1.9vw, 32px);
+  }
+
+  .auth-form,
+  .auth-form-grid {
+    gap: 14px;
+  }
+
+  .terms-section {
+    gap: 8px;
+  }
+}
+
 @media (max-width: 980px) {
   .auth-shell {
     grid-template-columns: 1fr;
+    min-height: 100dvh;
+    height: auto;
   }
 
   .auth-brand {
