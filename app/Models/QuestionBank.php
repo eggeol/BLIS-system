@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class QuestionBank extends Model
@@ -43,7 +44,17 @@ class QuestionBank extends Model
     /**
      * Exams that use this bank.
      */
-    public function exams(): HasMany
+    public function exams(): BelongsToMany
+    {
+        return $this->belongsToMany(Exam::class, 'exam_question_bank')
+            ->withPivot(['position'])
+            ->withTimestamps();
+    }
+
+    /**
+     * Exams that still reference this bank via the legacy single-bank column.
+     */
+    public function primaryExams(): HasMany
     {
         return $this->hasMany(Exam::class, 'question_bank_id');
     }

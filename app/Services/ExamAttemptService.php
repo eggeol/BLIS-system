@@ -63,11 +63,18 @@ class ExamAttemptService
     {
         $attempt->loadMissing([
             'exam:id,title,subject,question_bank_id,total_items,duration_minutes,scheduled_at,schedule_start_at,schedule_end_at,delivery_mode,one_take_only,shuffle_questions',
+            'exam.questionBanks:id,title,subject,total_items',
             'room:id,name,code',
             'attemptQuestions.question.options:id,question_bank_question_id,option_label,option_text,is_correct',
             'answers',
         ]);
 
+        $resolvedQuestionBanks = $attempt->exam?->resolvedQuestionBanks() ?? collect();
+        $resolvedQuestionBankIds = $resolvedQuestionBanks
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
         $deliveryMode = $this->deliveryModeService->normalize($attempt->exam?->delivery_mode);
         $isSubmitted = $attempt->status === ExamAttempt::STATUS_SUBMITTED;
         $showPerQuestionFeedback = $isSubmitted;
@@ -144,6 +151,16 @@ class ExamAttemptService
                 'title' => $attempt->exam?->title,
                 'subject' => $attempt->exam?->subject,
                 'question_bank_id' => $attempt->exam?->question_bank_id,
+                'question_bank_ids' => $resolvedQuestionBankIds,
+                'question_banks' => $resolvedQuestionBanks
+                    ->map(fn ($bank) => [
+                        'id' => (int) $bank->id,
+                        'title' => $bank->title,
+                        'subject' => $bank->subject,
+                        'total_items' => (int) ($bank->total_items ?? 0),
+                    ])
+                    ->values()
+                    ->all(),
                 'total_items' => $attempt->exam?->total_items,
                 'duration_minutes' => $attempt->exam?->duration_minutes,
                 'scheduled_at' => $attempt->exam?->scheduled_at,

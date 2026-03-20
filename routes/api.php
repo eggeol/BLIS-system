@@ -15,6 +15,7 @@ use App\Services\AuthTokenCookieService;
 use App\Services\ExamAttemptService;
 use App\Services\ExamDeliveryModeService;
 use App\Services\Library\DocxQuestionParser;
+use App\Services\ReviewBotService;
 use App\Services\ReportExportService;
 use App\Services\RoleService;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -35,6 +36,7 @@ $authTokenCookieService = app(AuthTokenCookieService::class);
 $deliveryModeService = app(ExamDeliveryModeService::class);
 $examAttemptService = app(ExamAttemptService::class);
 $reportExportService = app(ReportExportService::class);
+$reviewBotService = app(ReviewBotService::class);
 
 $canManageRooms = static function (User $user) use ($roleService): bool {
     return $roleService->canManageRooms($user);
@@ -165,6 +167,47 @@ $findAccessibleQuestionBank = static function (User $user, int $bankId, bool $ad
         ->whereKey($bankId)
         ->when(!$admin, fn ($query) => $query->where('created_by', $user->id))
         ->first();
+};
+
+$normalizeQuestionBankIds = static function (array $bankIds): array {
+    return collect($bankIds)
+        ->map(fn ($id) => (int) $id)
+        ->filter(fn ($id) => $id > 0)
+        ->unique()
+        ->values()
+        ->all();
+};
+
+$resolveExamQuestionBankIds = static function (array $validated, ?Exam $exam = null) use ($normalizeQuestionBankIds): array {
+    if (array_key_exists('question_bank_ids', $validated)) {
+        return $normalizeQuestionBankIds($validated['question_bank_ids'] ?? []);
+    }
+
+    if (array_key_exists('question_bank_id', $validated)) {
+        return !is_null($validated['question_bank_id'])
+            ? [(int) $validated['question_bank_id']]
+            : [];
+    }
+
+    return $exam ? $exam->resolvedQuestionBankIds() : [];
+};
+
+$findAccessibleQuestionBanks = static function (User $user, array $bankIds, bool $admin) use ($normalizeQuestionBankIds) {
+    $normalizedBankIds = $normalizeQuestionBankIds($bankIds);
+
+    if ($normalizedBankIds === []) {
+        return collect();
+    }
+
+    $orderLookup = array_flip($normalizedBankIds);
+
+    return QuestionBank::query()
+        ->withCount('questions')
+        ->whereIn('id', $normalizedBankIds)
+        ->when(!$admin, fn ($query) => $query->where('created_by', $user->id))
+        ->get()
+        ->sortBy(fn (QuestionBank $bank) => $orderLookup[(int) $bank->id] ?? PHP_INT_MAX)
+        ->values();
 };
 
 $normalizeAnswerText = static function (?string $value): string {
@@ -313,6 +356,8 @@ Route::middleware('auth:sanctum')->group(function () use (
     $isStaffMasterExaminer,
     $recordAudit,
     $findAccessibleQuestionBank,
+    $resolveExamQuestionBankIds,
+    $findAccessibleQuestionBanks,
     $normalizeAnswerText,
     $normalizeDeliveryMode,
     $refreshAttemptMetrics,
@@ -323,6 +368,7 @@ Route::middleware('auth:sanctum')->group(function () use (
     $authTokenCookieService,
     $ensureTeacherReportAccess,
     $reportExportService,
+    $reviewBotService,
 ) {
     Route::get('/auth/me', function (Request $request) use ($ensureActive) {
         if ($inactiveResponse = $ensureActive($request)) {
@@ -400,6 +446,10 @@ Route::middleware('auth:sanctum')->group(function () use (
 
         if (!$isAdmin($user)) {
             $assignedExams = $room->exams()
+                ->with([
+                    'questionBank:id,title,subject,total_items',
+                    'questionBanks:id,title,subject,total_items',
+                ])
                 ->select(
                     'exams.id',
                     'exams.title',
@@ -419,6 +469,7 @@ Route::middleware('auth:sanctum')->group(function () use (
                 ->get()
                 ->map(function ($assignedExam) use ($normalizeDeliveryMode) {
                     $assignedExam->delivery_mode = $normalizeDeliveryMode($assignedExam->delivery_mode);
+                    $assignedExam->question_bank_ids = $assignedExam->resolvedQuestionBankIds();
 
                     return $assignedExam;
                 })
@@ -1077,6 +1128,80 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
     });
 
+    Route::get('/student/review-bot/subjects', function (Request $request) use ($ensureActive, $reviewBotService) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if ($user->role !== User::ROLE_STUDENT) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        return response()->json([
+            'subjects' => $reviewBotService->listSubjects(),
+        ]);
+    });
+
+    Route::post('/student/review-bot/generate', function (
+        Request $request
+    ) use (
+        $ensureActive,
+        $reviewBotService,
+        $recordAudit
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if ($user->role !== User::ROLE_STUDENT) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'question_count' => ['required', 'integer', 'min:3', 'max:30'],
+            'subjects' => ['required', 'array', 'min:1', 'max:8'],
+            'subjects.*' => ['required', 'string', 'max:255'],
+        ]);
+
+        try {
+            $reviewSet = $reviewBotService->generateQuiz(
+                $validated['subjects'],
+                (int) $validated['question_count'],
+            );
+        } catch (\RuntimeException $exception) {
+            return response()->json([
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        $recordAudit(
+            $user,
+            'review-bot.generate',
+            'review_bot',
+            null,
+            'Generated a Review Bot practice set',
+            [
+                'question_count' => (int) $validated['question_count'],
+                'subjects' => $reviewSet['subjects'],
+                'generator' => $reviewSet['generator'],
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => $reviewSet['generator'] === 'ai'
+                ? 'AI review set generated successfully.'
+                : 'Review set generated from the teacher library.',
+            'generator' => $reviewSet['generator'],
+            'subjects' => $reviewSet['subjects'],
+            'questions' => $reviewSet['questions'],
+        ]);
+    });
+
     Route::get('/exams', function (Request $request) use ($isStaffMasterExaminer, $ensureActive, $normalizeDeliveryMode) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
@@ -1090,14 +1215,18 @@ Route::middleware('auth:sanctum')->group(function () use (
 
         $query = Exam::query()
             ->with('creator:id,name')
-            ->with('questionBank:id,title,subject,total_items')
-            ->with('rooms:id,name,code')
+            ->with([
+                'questionBank:id,title,subject,total_items',
+                'questionBanks:id,title,subject,total_items',
+                'rooms:id,name,code',
+            ])
             ->withCount('rooms')
             ->where('created_by', $user->id)
             ->latest();
 
         $exams = $query->get()->map(function (Exam $exam) use ($normalizeDeliveryMode) {
             $exam->delivery_mode = $normalizeDeliveryMode($exam->delivery_mode);
+            $exam->question_bank_ids = $exam->resolvedQuestionBankIds();
 
             return $exam;
         })->values();
@@ -1111,7 +1240,8 @@ Route::middleware('auth:sanctum')->group(function () use (
         $isStaffMasterExaminer,
         $ensureActive,
         $recordAudit,
-        $findAccessibleQuestionBank,
+        $resolveExamQuestionBankIds,
+        $findAccessibleQuestionBanks,
         $normalizeDeliveryMode
     ) {
         if ($inactiveResponse = $ensureActive($request)) {
@@ -1127,6 +1257,8 @@ Route::middleware('auth:sanctum')->group(function () use (
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
+            'question_bank_ids' => ['nullable', 'array'],
+            'question_bank_ids.*' => ['integer', 'exists:question_banks,id'],
             'question_bank_id' => ['nullable', 'integer', 'exists:question_banks,id'],
             'total_items' => ['required', 'integer', 'min:1', 'max:1000'],
             'duration_minutes' => ['required', 'integer', 'min:1', 'max:600'],
@@ -1149,33 +1281,26 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
-        $questionBank = null;
+        $selectedQuestionBankIds = $resolveExamQuestionBankIds($validated);
+        $selectedQuestionBanks = $findAccessibleQuestionBanks($user, $selectedQuestionBankIds, false);
 
-        if (!is_null($validated['question_bank_id'] ?? null)) {
-            $questionBank = $findAccessibleQuestionBank(
-                $user,
-                (int) $validated['question_bank_id'],
-                false,
-            );
+        if (count($selectedQuestionBankIds) !== $selectedQuestionBanks->count()) {
+            return response()->json([
+                'message' => 'One or more selected question sets are not accessible.',
+            ], 422);
+        }
 
-            if (!$questionBank) {
-                return response()->json([
-                    'message' => 'Selected question bank is not accessible.',
-                ], 422);
-            }
-
-            if ($questionBank->questions_count < (int) $validated['total_items']) {
-                return response()->json([
-                    'message' => 'Selected question bank does not have enough questions for total items.',
-                ], 422);
-            }
+        if ($selectedQuestionBanks->isNotEmpty() && $selectedQuestionBanks->sum('questions_count') < (int) $validated['total_items']) {
+            return response()->json([
+                'message' => 'Selected question sets do not have enough questions for the item count.',
+            ], 422);
         }
 
         $exam = Exam::create([
             'title' => $validated['title'],
-            'subject' => $questionBank?->subject,
+            'subject' => Exam::summarizeQuestionBankSubject($selectedQuestionBanks),
             'description' => $validated['description'] ?? null,
-            'question_bank_id' => $validated['question_bank_id'] ?? null,
+            'question_bank_id' => $selectedQuestionBankIds[0] ?? null,
             'total_items' => $validated['total_items'],
             'duration_minutes' => $validated['duration_minutes'],
             'scheduled_at' => $scheduleStartAt,
@@ -1186,6 +1311,8 @@ Route::middleware('auth:sanctum')->group(function () use (
             'shuffle_questions' => (bool) ($validated['shuffle_questions'] ?? false),
             'created_by' => $user->id,
         ]);
+
+        $exam->syncQuestionBanks($selectedQuestionBankIds);
 
         $roomIds = collect($validated['room_ids'] ?? [])->unique()->values();
 
@@ -1213,7 +1340,13 @@ Route::middleware('auth:sanctum')->group(function () use (
             $exam->rooms()->sync($syncPayload);
         }
 
-        $exam->load(['creator:id,name', 'questionBank:id,title,subject,total_items', 'rooms:id,name,code'])->loadCount('rooms');
+        $exam->load([
+            'creator:id,name',
+            'questionBank:id,title,subject,total_items',
+            'questionBanks:id,title,subject,total_items',
+            'rooms:id,name,code',
+        ])->loadCount('rooms');
+        $exam->question_bank_ids = $exam->resolvedQuestionBankIds();
 
         $recordAudit(
             $user,
@@ -1228,6 +1361,7 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'schedule_end_at' => $exam->schedule_end_at,
                 'delivery_mode' => $normalizeDeliveryMode($exam->delivery_mode),
                 'question_bank_id' => $exam->question_bank_id,
+                'question_bank_ids' => $exam->question_bank_ids,
                 'one_take_only' => (bool) $exam->one_take_only,
                 'shuffle_questions' => (bool) $exam->shuffle_questions,
                 'rooms_assigned' => $exam->rooms_count,
@@ -1247,7 +1381,8 @@ Route::middleware('auth:sanctum')->group(function () use (
         $isStaffMasterExaminer,
         $ensureActive,
         $recordAudit,
-        $findAccessibleQuestionBank,
+        $resolveExamQuestionBankIds,
+        $findAccessibleQuestionBanks,
         $normalizeDeliveryMode
     ) {
         if ($inactiveResponse = $ensureActive($request)) {
@@ -1267,6 +1402,8 @@ Route::middleware('auth:sanctum')->group(function () use (
         $validated = $request->validate([
             'title' => ['sometimes', 'required', 'string', 'max:255'],
             'description' => ['sometimes', 'nullable', 'string'],
+            'question_bank_ids' => ['sometimes', 'array'],
+            'question_bank_ids.*' => ['integer', 'exists:question_banks,id'],
             'question_bank_id' => ['sometimes', 'nullable', 'integer', 'exists:question_banks,id'],
             'total_items' => ['sometimes', 'required', 'integer', 'min:1', 'max:1000'],
             'duration_minutes' => ['sometimes', 'required', 'integer', 'min:1', 'max:600'],
@@ -1293,46 +1430,40 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
-        $resolvedQuestionBankId = array_key_exists('question_bank_id', $validated)
-            ? $validated['question_bank_id']
-            : $exam->question_bank_id;
+        $resolvedQuestionBankIds = $resolveExamQuestionBankIds($validated, $exam);
         $resolvedTotalItems = array_key_exists('total_items', $validated)
             ? (int) $validated['total_items']
             : (int) $exam->total_items;
-        $resolvedQuestionBank = null;
 
-        if (!is_null($resolvedQuestionBankId)) {
-            $resolvedQuestionBank = $findAccessibleQuestionBank(
-                $user,
-                (int) $resolvedQuestionBankId,
-                false,
-            );
+        $resolvedQuestionBanks = $findAccessibleQuestionBanks($user, $resolvedQuestionBankIds, false);
 
-            if (!$resolvedQuestionBank) {
-                return response()->json([
-                    'message' => 'Selected question bank is not accessible.',
-                ], 422);
-            }
+        if (count($resolvedQuestionBankIds) !== $resolvedQuestionBanks->count()) {
+            return response()->json([
+                'message' => 'One or more selected question sets are not accessible.',
+            ], 422);
+        }
 
-            if ($resolvedQuestionBank->questions_count < $resolvedTotalItems) {
-                return response()->json([
-                    'message' => 'Selected question bank does not have enough questions for total items.',
-                ], 422);
-            }
+        if ($resolvedQuestionBanks->isNotEmpty() && $resolvedQuestionBanks->sum('questions_count') < $resolvedTotalItems) {
+            return response()->json([
+                'message' => 'Selected question sets do not have enough questions for the item count.',
+            ], 422);
         }
 
         $exam->fill(collect($validated)->except([
             'scheduled_at',
             'schedule_start_at',
             'schedule_end_at',
+            'question_bank_ids',
         ])->all());
-        $exam->subject = $resolvedQuestionBank?->subject;
+        $exam->subject = Exam::summarizeQuestionBankSubject($resolvedQuestionBanks);
+        $exam->question_bank_id = $resolvedQuestionBankIds[0] ?? null;
         $exam->scheduled_at = $resolvedScheduleStart;
         $exam->schedule_start_at = $resolvedScheduleStart;
         $exam->schedule_end_at = $resolvedScheduleEnd;
         $exam->delivery_mode = Exam::DELIVERY_MODE_OPEN_NAVIGATION;
 
         $exam->save();
+        $exam->syncQuestionBanks($resolvedQuestionBankIds);
 
         if (array_key_exists('room_ids', $validated)) {
             $roomIds = collect($validated['room_ids'] ?? [])->unique()->values();
@@ -1360,7 +1491,13 @@ Route::middleware('auth:sanctum')->group(function () use (
             $exam->rooms()->sync($syncPayload);
         }
 
-        $exam->load(['creator:id,name', 'questionBank:id,title,subject,total_items', 'rooms:id,name,code'])->loadCount('rooms');
+        $exam->load([
+            'creator:id,name',
+            'questionBank:id,title,subject,total_items',
+            'questionBanks:id,title,subject,total_items',
+            'rooms:id,name,code',
+        ])->loadCount('rooms');
+        $exam->question_bank_ids = $exam->resolvedQuestionBankIds();
 
         $recordAudit(
             $user,
@@ -1375,6 +1512,7 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'schedule_end_at' => $exam->schedule_end_at,
                 'delivery_mode' => $normalizeDeliveryMode($exam->delivery_mode),
                 'question_bank_id' => $exam->question_bank_id,
+                'question_bank_ids' => $exam->question_bank_ids,
                 'one_take_only' => (bool) $exam->one_take_only,
                 'shuffle_questions' => (bool) $exam->shuffle_questions,
                 'rooms_assigned' => $exam->rooms_count,
@@ -1733,21 +1871,29 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
-        if (!$exam->question_bank_id) {
+        $questionBankIds = $exam->resolvedQuestionBankIds();
+
+        if ($questionBankIds === []) {
             return response()->json([
-                'message' => 'This exam has no question bank configured yet.',
+                'message' => 'This exam has no question set configured yet.',
             ], 422);
         }
 
-        $questionBank = QuestionBank::query()->find($exam->question_bank_id);
+        $questionBankOrder = array_flip($questionBankIds);
+        $questionBanks = QuestionBank::query()
+            ->withCount('questions')
+            ->whereIn('id', $questionBankIds)
+            ->get()
+            ->sortBy(fn (QuestionBank $bank) => $questionBankOrder[(int) $bank->id] ?? PHP_INT_MAX)
+            ->values();
 
-        if (!$questionBank) {
+        if ($questionBanks->count() !== count($questionBankIds)) {
             return response()->json([
-                'message' => 'Source question bank was not found.',
+                'message' => 'One or more linked question sets could not be found.',
             ], 422);
         }
 
-        $availableQuestionCount = $questionBank->questions()->count();
+        $availableQuestionCount = (int) $questionBanks->sum('questions_count');
         $targetItems = min((int) $exam->total_items, $availableQuestionCount);
 
         if ($targetItems < 1) {
@@ -1792,14 +1938,19 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
-        $questionBankId = (int) $questionBank->id;
         $questionQuery = DB::table('question_bank_questions')
-            ->where('question_bank_id', $questionBankId);
+            ->whereIn('question_bank_id', $questionBankIds);
 
         if ((bool) $exam->shuffle_questions) {
             $questionQuery->inRandomOrder();
         } else {
+            $bankOrderSql = collect($questionBankIds)
+                ->values()
+                ->map(fn ($bankId, $index) => 'WHEN ' . (int) $bankId . ' THEN ' . $index)
+                ->implode(' ');
+
             $questionQuery
+                ->orderByRaw('CASE question_bank_id ' . $bankOrderSql . ' ELSE ' . count($questionBankIds) . ' END')
                 ->orderBy('item_number')
                 ->orderBy('id');
         }

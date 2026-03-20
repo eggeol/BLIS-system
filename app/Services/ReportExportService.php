@@ -361,28 +361,34 @@ class ReportExportService
      */
     public function buildAnswerKey(Exam $exam): array
     {
-        if (!$exam->question_bank_id) {
+        $questionBankIds = $exam->resolvedQuestionBankIds();
+
+        if ($questionBankIds === []) {
             return [];
         }
 
-        $query = QuestionBankQuestion::query()
-            ->where('question_bank_id', (int) $exam->question_bank_id)
+        $orderLookup = array_flip($questionBankIds);
+        $questions = QuestionBankQuestion::query()
+            ->whereIn('question_bank_id', $questionBankIds)
             ->with('options:id,question_bank_question_id,option_label,option_text,is_correct')
-            ->orderBy('item_number')
-            ->orderBy('id');
+            ->get()
+            ->sortBy([
+                fn (QuestionBankQuestion $question) => $orderLookup[(int) $question->question_bank_id] ?? PHP_INT_MAX,
+                fn (QuestionBankQuestion $question) => (int) $question->item_number,
+                fn (QuestionBankQuestion $question) => (int) $question->id,
+            ]);
 
         if ((int) $exam->total_items > 0) {
-            $query->limit((int) $exam->total_items);
+            $questions = $questions->take((int) $exam->total_items);
         }
 
-        return $query
-            ->get()
+        return $questions
             ->values()
-            ->map(function (QuestionBankQuestion $question): array {
+            ->map(function (QuestionBankQuestion $question, int $index): array {
                 $correctAnswer = $this->resolveCorrectAnswer($question);
 
                 return [
-                    'item_number' => (int) $question->item_number,
+                    'item_number' => $index + 1,
                     'question_text' => (string) $question->question_text,
                     'question_type' => (string) $question->question_type,
                     'correct_answer' => $correctAnswer,

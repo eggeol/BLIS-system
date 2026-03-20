@@ -58,6 +58,57 @@ function compareCategoryThenName(left, right) {
   return leftTitle.localeCompare(rightTitle)
 }
 
+function normalizeQuestionBankRecord(bank) {
+  if (!bank?.id) return null
+
+  return {
+    id: Number(bank.id),
+    title: String(bank.title ?? '').trim(),
+    subject: bank.subject ? String(bank.subject).trim() : null,
+    total_items: Number(bank.total_items ?? bank.questions_count ?? 0),
+  }
+}
+
+function summarizeQuestionBankSubject(questionBanks) {
+  const subjects = [...new Set(
+    questionBanks
+      .map((bank) => String(bank?.subject ?? '').trim())
+      .filter(Boolean),
+  )]
+
+  if (subjects.length === 0) return null
+  if (subjects.length === 1) return subjects[0]
+  return 'Multiple Subjects'
+}
+
+function questionBanksForExam(exam) {
+  const linkedBanks = Array.isArray(exam?.question_banks)
+    ? exam.question_banks.map(normalizeQuestionBankRecord).filter(Boolean)
+    : []
+
+  if (linkedBanks.length > 0) {
+    return linkedBanks
+  }
+
+  const legacyBank = normalizeQuestionBankRecord(exam?.question_bank)
+  return legacyBank ? [legacyBank] : []
+}
+
+function questionBankSummaryTextFromList(questionBanks) {
+  if (questionBanks.length === 0) return 'Not linked yet'
+  if (questionBanks.length === 1) return questionBanks[0].title
+  if (questionBanks.length === 2) return `${questionBanks[0].title}, ${questionBanks[1].title}`
+  return `${questionBanks[0].title}, ${questionBanks[1].title}, +${questionBanks.length - 2} more`
+}
+
+function uniquePositiveIntegers(values) {
+  return [...new Set(
+    values
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0),
+  )]
+}
+
 export function useExamsModule() {
   const services = useDashboardDataServices()
 
@@ -75,7 +126,7 @@ export function useExamsModule() {
     id: null,
     title: '',
     description: '',
-    question_bank_id: null,
+    question_bank_ids: [],
     total_items: 60,
     duration_minutes: 90,
     schedule_start_at: '',
@@ -105,8 +156,21 @@ export function useExamsModule() {
       }))
   })
 
-  const selectedQuestionBank = computed(() => (
-    examQuestionBanks.value.find((bank) => bank.id === Number(examForm.question_bank_id)) ?? null
+  const selectedQuestionBanks = computed(() => {
+    const selectedIds = uniquePositiveIntegers(examForm.question_bank_ids)
+    const bankLookup = new Map(examQuestionBanks.value.map((bank) => [bank.id, bank]))
+
+    return selectedIds
+      .map((id) => bankLookup.get(id) ?? null)
+      .filter(Boolean)
+  })
+
+  const selectedQuestionBankSubject = computed(() => (
+    summarizeQuestionBankSubject(selectedQuestionBanks.value)
+  ))
+
+  const selectedQuestionBankTotalItems = computed(() => (
+    selectedQuestionBanks.value.reduce((total, bank) => total + Number(bank.total_items ?? 0), 0)
   ))
 
   const createExamScheduleMin = computed(() => (
@@ -131,7 +195,7 @@ export function useExamsModule() {
     examForm.id = null
     examForm.title = ''
     examForm.description = ''
-    examForm.question_bank_id = null
+    examForm.question_bank_ids = []
     examForm.total_items = 60
     examForm.duration_minutes = 90
     examForm.schedule_start_at = currentDateTimeLocalValue()
@@ -149,12 +213,12 @@ export function useExamsModule() {
   }
 
   function openEditExamModal(exam) {
+    const linkedBanks = questionBanksForExam(exam)
+
     examForm.id = exam.id
     examForm.title = exam.title ?? ''
     examForm.description = exam.description ?? ''
-    examForm.question_bank_id = exam.question_bank_id
-      ? Number(exam.question_bank_id)
-      : (exam.question_bank?.id ?? null)
+    examForm.question_bank_ids = linkedBanks.map((bank) => bank.id)
     examForm.total_items = Number(exam.total_items ?? 1)
     examForm.duration_minutes = Number(exam.duration_minutes ?? 1)
     examForm.schedule_start_at = toDateTimeLocalValue(exam.schedule_start_at ?? exam.scheduled_at)
@@ -198,12 +262,10 @@ export function useExamsModule() {
   async function fetchExamQuestionBanks() {
     try {
       const { data } = await services.getLibraryBanks()
-      examQuestionBanks.value = (data.banks ?? []).map((bank) => ({
-        id: bank.id,
-        title: bank.title,
-        subject: bank.subject,
-        total_items: Number(bank.total_items ?? bank.questions_count ?? 0),
-      })).sort(compareCategoryThenName)
+      examQuestionBanks.value = (data.banks ?? [])
+        .map(normalizeQuestionBankRecord)
+        .filter(Boolean)
+        .sort(compareCategoryThenName)
     } catch (error) {
       examQuestionBanks.value = []
     }
@@ -222,15 +284,22 @@ export function useExamsModule() {
       ])
 
       exams.value = (examData.exams ?? [])
-        .map((exam) => ({
-          ...exam,
-          schedule_start_at: exam.schedule_start_at ?? exam.scheduled_at ?? null,
-          schedule_end_at: exam.schedule_end_at ?? null,
-          delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
-        }))
+        .map((exam) => {
+          const linkedBanks = questionBanksForExam(exam)
+
+          return {
+            ...exam,
+            question_banks: linkedBanks,
+            question_bank_ids: linkedBanks.map((bank) => bank.id),
+            subject: exam.subject ?? summarizeQuestionBankSubject(linkedBanks),
+            schedule_start_at: exam.schedule_start_at ?? exam.scheduled_at ?? null,
+            schedule_end_at: exam.schedule_end_at ?? null,
+            delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
+          }
+        })
         .sort((left, right) => compareCategoryThenName(
-          { subject: left.question_bank?.subject ?? left.subject, title: left.title },
-          { subject: right.question_bank?.subject ?? right.subject, title: right.title },
+          { subject: summarizeQuestionBankSubject(left.question_banks) ?? left.subject, title: left.title },
+          { subject: summarizeQuestionBankSubject(right.question_banks) ?? right.subject, title: right.title },
         ))
     } catch (error) {
       examError.value = firstApiError(error, 'Unable to load exams right now.')
@@ -279,9 +348,14 @@ export function useExamsModule() {
       return
     }
 
-    const selectedBank = examQuestionBanks.value.find((bank) => bank.id === Number(examForm.question_bank_id))
-    if (selectedBank && Number(examForm.total_items) > Number(selectedBank.total_items)) {
-      examError.value = 'Selected question bank does not have enough questions for the item count.'
+    const selectedBankIds = uniquePositiveIntegers(examForm.question_bank_ids)
+    const availableQuestionCount = selectedQuestionBanks.value.reduce(
+      (total, bank) => total + Number(bank.total_items ?? 0),
+      0,
+    )
+
+    if (selectedQuestionBanks.value.length > 0 && Number(examForm.total_items) > availableQuestionCount) {
+      examError.value = 'Selected question sets do not have enough questions for the item count.'
       examSaving.value = false
       return
     }
@@ -289,7 +363,8 @@ export function useExamsModule() {
     const payload = {
       title: examForm.title.trim(),
       description: examForm.description.trim() || null,
-      question_bank_id: examForm.question_bank_id ? Number(examForm.question_bank_id) : null,
+      question_bank_id: selectedBankIds[0] ?? null,
+      question_bank_ids: selectedBankIds,
       total_items: Number(examForm.total_items),
       duration_minutes: Number(examForm.duration_minutes),
       scheduled_at: scheduleStartAt,
@@ -337,6 +412,18 @@ export function useExamsModule() {
     }
   }
 
+  function examQuestionBankCount(exam) {
+    return questionBanksForExam(exam).length
+  }
+
+  function examQuestionBankSubject(exam) {
+    return summarizeQuestionBankSubject(questionBanksForExam(exam)) ?? exam?.subject ?? 'General'
+  }
+
+  function examQuestionBankSummaryText(exam) {
+    return questionBankSummaryTextFromList(questionBanksForExam(exam))
+  }
+
   onMounted(async () => {
     await loadExams()
   })
@@ -346,7 +433,9 @@ export function useExamsModule() {
     manageableRooms,
     examQuestionBanks,
     groupedExamQuestionBanks,
-    selectedQuestionBank,
+    selectedQuestionBanks,
+    selectedQuestionBankSubject,
+    selectedQuestionBankTotalItems,
     createExamScheduleMin,
     createExamScheduleEndMin,
     examLoading,
@@ -357,6 +446,9 @@ export function useExamsModule() {
     showDeleteExamModal,
     selectedExam,
     examForm,
+    examQuestionBankCount,
+    examQuestionBankSubject,
+    examQuestionBankSummaryText,
     loadExams,
     openCreateExamModal,
     openEditExamModal,
