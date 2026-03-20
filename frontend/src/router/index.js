@@ -14,6 +14,7 @@ import {
 const DashboardHomeView = () => import('../views/dashboard/student/DashboardHomeView.vue')
 const RoomsView = () => import('../views/dashboard/student/RoomsView.vue')
 const AnalyticsView = () => import('../views/dashboard/student/AnalyticsView.vue')
+const ReviewBotView = () => import('../views/dashboard/student/ReviewBotView.vue')
 const RoomManagementView = () => import('../views/dashboard/shared/RoomManagementView.vue')
 const LibraryView = () => import('../views/dashboard/staff/LibraryView.vue')
 const ExamsView = () => import('../views/dashboard/staff/ExamsView.vue')
@@ -58,6 +59,12 @@ const routes = [
         name: 'dashboard-analytics',
         component: AnalyticsView,
         meta: dashboardRouteMeta('analytics'),
+      },
+      {
+        path: 'review-bot',
+        name: 'dashboard-review-bot',
+        component: ReviewBotView,
+        meta: dashboardRouteMeta('reviewBot'),
       },
       {
         path: 'room-management',

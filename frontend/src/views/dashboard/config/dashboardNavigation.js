@@ -6,6 +6,7 @@ import {
   FileText,
   LayoutDashboard,
   Settings,
+  Sparkles,
   UserRound,
 } from 'lucide-vue-next'
 
@@ -33,6 +34,14 @@ export const dashboardModules = {
     title: 'Analytics',
     sub: 'Monitor trends and identify weak areas quickly',
     icon: BarChart3,
+  },
+  reviewBot: {
+    key: 'reviewBot',
+    routeName: 'dashboard-review-bot',
+    label: 'Review Bot',
+    title: 'Review Bot',
+    sub: 'Generate AI-powered practice questions from the teacher library',
+    icon: Sparkles,
   },
   room: {
     key: 'room',
@@ -93,7 +102,7 @@ export const dashboardModules = {
 }
 
 const dashboardNavKeysByRole = {
-  student: ['dashboard', 'rooms', 'analytics'],
+  student: ['dashboard', 'rooms', 'reviewBot', 'analytics'],
   staff_master_examiner: ['library', 'room', 'exams', 'reports', 'settings'],
   faculty: ['library', 'room', 'exams', 'reports', 'settings'],
   admin: ['users', 'room', 'settings', 'audit'],
