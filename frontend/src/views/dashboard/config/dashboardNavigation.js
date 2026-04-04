@@ -75,6 +75,14 @@ export const dashboardModules = {
     sub: 'Review aggregate and student-level insights',
     icon: BarChart3,
   },
+  students: {
+    key: 'students',
+    routeName: 'dashboard-students',
+    label: 'Students',
+    title: 'Students',
+    sub: 'Browse current students by year level and review their performance',
+    icon: UserRound,
+  },
   settings: {
     key: 'settings',
     routeName: 'dashboard-settings',
@@ -104,8 +112,7 @@ export const dashboardModules = {
 const dashboardNavKeysByRole = {
   student: ['dashboard', 'rooms', 'reviewBot', 'analytics'],
   staff_master_examiner: ['library', 'room', 'exams', 'reports', 'settings'],
-  faculty: ['library', 'room', 'exams', 'reports', 'settings'],
-  admin: ['users', 'room', 'settings', 'audit'],
+  admin: ['users', 'room', 'students', 'settings', 'audit'],
 }
 
 export function normalizeDashboardRole(role) {

@@ -20,6 +20,10 @@ class ExamsApi {
   liveBoard(examId, roomId) {
     return http.get(`/exams/${examId}/live-dashboard`, { params: { room_id: roomId } })
   }
+
+  itemAnalytics(examId) {
+    return http.get(`/exams/${examId}/item-analytics`)
+  }
 }
 
 export const examsApi = new ExamsApi()

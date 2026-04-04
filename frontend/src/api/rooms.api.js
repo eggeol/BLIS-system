@@ -29,8 +29,20 @@ class RoomsApi {
     return http.delete(`/rooms/${roomId}/members/${memberId}`)
   }
 
+  archiveExam(roomId, examId) {
+    return http.post(`/rooms/${roomId}/exams/${examId}/archive`)
+  }
+
+  restoreExam(roomId, examId) {
+    return http.post(`/rooms/${roomId}/exams/${examId}/restore`)
+  }
+
   leave(roomId) {
     return http.delete(`/rooms/${roomId}/leave`)
+  }
+
+  exportGrades(roomId) {
+    return http.get(`/rooms/${roomId}/export-grades`, { responseType: 'blob' })
   }
 }
 

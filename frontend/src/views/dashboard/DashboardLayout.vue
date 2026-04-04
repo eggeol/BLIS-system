@@ -98,7 +98,6 @@ const pageSubtitle = computed(() => String(route.meta?.sub ?? 'Manage your modul
 
 const displayName = computed(() => auth.user?.name ?? 'User')
 const displayRole = computed(() => {
-  if (normalizedRole.value === 'faculty') return 'Faculty'
   if (normalizedRole.value === 'staff_master_examiner') return 'Staff / Master Examiner'
   if (normalizedRole.value === 'admin') return 'Administrator'
   return 'Student'
@@ -160,10 +159,7 @@ onBeforeUnmount(() => {
   min-height: 100dvh;
   display: grid;
   grid-template-columns: auto 1fr;
-  background:
-    radial-gradient(circle at 88% 0%, rgba(201, 168, 76, 0.24), transparent 30%),
-    linear-gradient(180deg, rgba(26, 35, 126, 0.08), transparent 40%),
-    var(--lnu-bg);
+  background: var(--lnu-bg, #f4f6f8);
 }
 
 .layout-sidebar {
@@ -300,11 +296,18 @@ onBeforeUnmount(() => {
   gap: 10px;
   padding: 0 10px;
   text-align: left;
+  transition: all 0.2s ease;
+}
+
+.layout-nav-item:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
 }
 
 .layout-nav-item.active {
-  background: linear-gradient(135deg, var(--lnu-gold-light), var(--lnu-gold));
-  color: var(--lnu-navy-deep);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--lnu-gold-light);
+  box-shadow: inset 4px 0 0 var(--lnu-gold-light);
 }
 
 .layout-nav-label {
@@ -404,9 +407,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow-y: auto;
   padding: 22px 24px;
-  background:
-    radial-gradient(circle at 100% 0%, rgba(201, 168, 76, 0.1), transparent 25%),
-    transparent;
+  background: transparent;
 }
 
 @media (max-width: 900px) {

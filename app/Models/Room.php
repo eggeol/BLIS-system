@@ -40,12 +40,51 @@ class Room extends Model
     }
 
     /**
+     * Current students enrolled in this room.
+     */
+    public function currentStudentMembers(): BelongsToMany
+    {
+        return $this->members()
+            ->where('users.role', User::ROLE_STUDENT)
+            ->whereNull('users.archived_at');
+    }
+
+    /**
+     * Archived students retained for historical records.
+     */
+    public function archivedStudentMembers(): BelongsToMany
+    {
+        return $this->members()
+            ->where('users.role', User::ROLE_STUDENT)
+            ->whereNotNull('users.archived_at');
+    }
+
+    /**
      * Exams assigned to this room.
      */
     public function exams(): BelongsToMany
     {
         return $this->belongsToMany(Exam::class, 'exam_room')
-            ->withPivot(['assigned_by'])
+            ->withPivot(['assigned_by', 'archived_at', 'archived_by'])
+            ->withTimestamps();
+    }
+
+    /**
+     * Active exams assigned to this room.
+     */
+    public function activeExams(): BelongsToMany
+    {
+        return $this->exams()
+            ->wherePivotNull('archived_at');
+    }
+
+    /**
+     * Archived exam assignments retained for history.
+     */
+    public function archivedExams(): BelongsToMany
+    {
+        return $this->exams()
+            ->wherePivotNotNull('archived_at')
             ->withTimestamps();
     }
 

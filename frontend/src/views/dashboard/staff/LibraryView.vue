@@ -36,14 +36,22 @@
       <div v-else class="management-list">
         <article v-for="bank in libraryQuestionBanks" :key="bank.id" class="management-item">
           <div class="management-item-main">
-            <strong>{{ bank.title }}</strong>
-            <p>{{ bank.subject || 'General' }} • {{ bank.total_items }} items</p>
-            <div class="management-inline">
-              <span class="pill neutral">{{ bank.questions_count ?? bank.total_items }} question(s)</span>
-              <span v-if="bank.creator?.name" class="pill navy">By {{ bank.creator.name }}</span>
-              <span v-if="bank.source_filename" class="pill success">{{ bank.source_filename }}</span>
+            <div class="management-item-heading">
+              <strong>{{ bank.title }}</strong>
+              <span class="pill success">{{ bank.total_items }} items</span>
             </div>
-            <p class="muted">Updated {{ formatDateTime(bank.updated_at) }}</p>
+            <p>{{ bank.subject || 'General subject' }}</p>
+
+            <div class="management-meta-grid">
+              <div>
+                <small>Source</small>
+                <strong>{{ bank.source_filename || 'Manual entry' }}</strong>
+              </div>
+              <div>
+                <small>Updated</small>
+                <strong>{{ formatDateTime(bank.updated_at) }}</strong>
+              </div>
+            </div>
           </div>
 
           <div class="management-actions">

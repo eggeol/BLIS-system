@@ -36,12 +36,27 @@
       <div v-else class="management-list">
         <article v-for="exam in exams" :key="exam.id" class="management-item">
           <div class="management-item-main">
-            <strong>{{ exam.title }}</strong>
-            <p>{{ exam.total_items }} items | {{ exam.duration_minutes }} mins</p>
-            <div class="management-inline">
+            <div class="management-item-heading">
+              <strong>{{ exam.title }}</strong>
               <span class="pill success">{{ examQuestionBankSubject(exam) }}</span>
-              <span class="pill neutral">{{ examQuestionBankCount(exam) }} question set(s)</span>
-              <span class="pill navy">{{ exam.rooms_count ?? exam.rooms?.length ?? 0 }} room(s)</span>
+            </div>
+
+            <div class="management-meta-grid three-up">
+              <div>
+                <small>Items</small>
+                <strong>{{ exam.total_items }}</strong>
+              </div>
+              <div>
+                <small>Duration</small>
+                <strong>{{ exam.duration_minutes }} mins</strong>
+              </div>
+              <div>
+                <small>Rooms</small>
+                <strong>{{ exam.active_rooms_count ?? exam.rooms?.length ?? 0 }}</strong>
+              </div>
+            </div>
+
+            <div class="management-inline">
               <span class="pill neutral">{{ examDeliveryModeLabel(exam.delivery_mode) }}</span>
               <span class="pill" :class="exam.one_take_only ? 'success' : 'neutral'">
                 {{ exam.one_take_only ? 'One Take Only' : 'Retake Allowed' }}
@@ -49,13 +64,15 @@
               <span class="pill" :class="exam.shuffle_questions ? 'navy' : 'neutral'">
                 {{ exam.shuffle_questions ? 'Shuffled Items' : 'Fixed Order' }}
               </span>
-              <span v-if="exam.creator?.name" class="pill success">By {{ exam.creator.name }}</span>
             </div>
-            <p class="muted">Question Sets: {{ examQuestionBankSummaryText(exam) }}</p>
-            <p v-if="exam.description" class="muted">{{ exam.description }}</p>
-            <p class="muted">
-              Schedule: {{ formatExamSchedule(exam.schedule_start_at ?? exam.scheduled_at, exam.schedule_end_at) }}
-            </p>
+
+            <div class="management-item-list-meta">
+              <p class="muted"><strong>Sources:</strong> {{ examQuestionBankSummaryText(exam) }}</p>
+              <p v-if="exam.description" class="muted"><strong>Note:</strong> {{ exam.description }}</p>
+              <p class="muted">
+                <strong>Schedule:</strong> {{ formatExamSchedule(exam.schedule_start_at ?? exam.scheduled_at, exam.schedule_end_at) }}
+              </p>
+            </div>
           </div>
 
           <div class="management-actions">
@@ -255,6 +272,26 @@
                           <span>
                             <strong>Shuffle questions</strong>
                             <small>Each attempt gets a randomized order when possible.</small>
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="field-stack" style="margin-top: 16px;">
+                      <span class="field-label">Results Visibility</span>
+                      <div class="exam-policy-list">
+                        <label class="check-item exam-policy-item">
+                          <input v-model="examForm.results_visibility_mode" type="radio" value="hidden" />
+                          <span>
+                            <strong>Hidden</strong>
+                            <small>Students only see final scores, not individual correct answers.</small>
+                          </span>
+                        </label>
+                        <label class="check-item exam-policy-item">
+                          <input v-model="examForm.results_visibility_mode" type="radio" value="visible" />
+                          <span>
+                            <strong>Visible</strong>
+                            <small>Students can review the exam and see right/wrong answers.</small>
                           </span>
                         </label>
                       </div>

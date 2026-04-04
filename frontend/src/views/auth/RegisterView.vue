@@ -94,6 +94,19 @@
           </div>
 
           <label class="field-group">
+            <span class="field-label">Current year level</span>
+            <div class="field-wrap field-wrap-select">
+              <GraduationCap :size="17" class="field-icon" />
+              <select v-model="form.year_level" class="field-input field-select">
+                <option value="">Select year level</option>
+                <option v-for="level in yearLevelOptions" :key="level.value" :value="level.value">
+                  {{ level.label }}
+                </option>
+              </select>
+            </div>
+          </label>
+
+          <label class="field-group">
             <span class="field-label">Email address</span>
             <div class="field-wrap">
               <Mail :size="17" class="field-icon" />
@@ -271,6 +284,7 @@ const form = reactive({
   middle_name: '',
   last_name: '',
   student_id: '',
+  year_level: '',
   email: '',
   password: '',
   password_confirmation: '',
@@ -297,6 +311,13 @@ const highlights = [
   { icon: ClipboardCheck, text: 'Room-based class exam management' },
   { icon: BarChart3, text: 'Clear analytics and score tracking' },
   { icon: ShieldCheck, text: 'Role-based access for each account' },
+]
+
+const yearLevelOptions = [
+  { value: '1', label: '1st Year' },
+  { value: '2', label: '2nd Year' },
+  { value: '3', label: '3rd Year' },
+  { value: '4', label: '4th Year' },
 ]
 
 const defaultTermsOfUseText = `1. Acceptable Use
@@ -451,15 +472,21 @@ async function handleSubmit() {
   const middleName = form.middle_name.trim()
   const lastName = form.last_name.trim()
   const studentId = form.student_id.trim()
+  const yearLevel = Number(form.year_level)
   const email = form.email.trim()
 
-  if (!firstName || !lastName || !studentId || !email || !form.password || !form.password_confirmation) {
+  if (!firstName || !lastName || !studentId || !email || !form.password || !form.password_confirmation || !form.year_level) {
     apiError.value = 'Please complete all required fields.'
     return
   }
 
   if (!/^\d{7,20}$/.test(studentId)) {
     apiError.value = 'Student ID must be 7 to 20 digits.'
+    return
+  }
+
+  if (![1, 2, 3, 4].includes(yearLevel)) {
+    apiError.value = 'Select a valid year level.'
     return
   }
 
@@ -485,6 +512,7 @@ async function handleSubmit() {
       middleName,
       lastName,
       studentId,
+      yearLevel,
       email,
       form.password,
       form.password_confirmation,

@@ -33,6 +33,7 @@ class Exam extends Model
         'delivery_mode',
         'one_take_only',
         'shuffle_questions',
+        'results_visibility_mode',
         'created_by',
     ];
 
@@ -83,7 +84,26 @@ class Exam extends Model
     public function rooms(): BelongsToMany
     {
         return $this->belongsToMany(Room::class, 'exam_room')
-            ->withPivot(['assigned_by'])
+            ->withPivot(['assigned_by', 'archived_at', 'archived_by'])
+            ->withTimestamps();
+    }
+
+    /**
+     * Rooms where this exam is currently active.
+     */
+    public function activeRooms(): BelongsToMany
+    {
+        return $this->rooms()
+            ->wherePivotNull('archived_at');
+    }
+
+    /**
+     * Rooms where this exam is archived.
+     */
+    public function archivedRooms(): BelongsToMany
+    {
+        return $this->rooms()
+            ->wherePivotNotNull('archived_at')
             ->withTimestamps();
     }
 

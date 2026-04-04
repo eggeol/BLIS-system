@@ -23,6 +23,7 @@ This file is for coding agents. Keep it short, execution-focused, and updated wh
 - Frontend auth store: `frontend/src/stores/auth.js`
 - Frontend router guard: `frontend/src/router/index.js`
 - Role-based sidebar/nav: `frontend/src/views/Dashboard.vue`
+- Staff student directory view: `frontend/src/views/dashboard/staff/StudentsView.vue`
 - Docker stack: `docker-compose.yml`, `dockerfile`, `nginx/default.conf`
 
 ## Role and Access Rules
@@ -44,14 +45,36 @@ This file is for coding agents. Keep it short, execution-focused, and updated wh
 
 Defined in `database/seeders/DatabaseSeeder.php`:
 
-- Students (12 total): `student@example.com`, `student1@example.com` ... `student11@example.com`
+- Current students (120 total): `student@example.com`, `student1@example.com` ... `student119@example.com`
   - Password: `pass`
   - Role: `student`
-  - Student IDs: `2301290` ... `2301301`
+  - Year levels are grouped by section:
+    - `student@example.com` to `student29@example.com` = `1st Year`
+    - `student30@example.com` to `student59@example.com` = `2nd Year`
+    - `student60@example.com` to `student89@example.com` = `3rd Year`
+    - `student90@example.com` to `student119@example.com` = `4th Year`
+  - Student IDs: `2301290` ... `2301409`
+- Archived graduate samples (4 total): `graduate1@example.com` ... `graduate4@example.com`
+  - Password: `pass`
+  - Role: `student`
+  - Year level: `4`
+  - These accounts are archived for history/demo flows.
 - Teachers (3 total): `teacher@example.com`, `teacher1@example.com`, `teacher2@example.com`
   - Password: `pass`
   - Role: `staff_master_examiner`
 - Admin: `admin@example.com` / `pass` / `admin`
+
+## Seeded Demo Data (Local Dev)
+
+- `migrate:fresh --seed` now creates demo question banks, rooms, exams, memberships, audit logs, and exam attempts.
+- Seeded demo question banks all clone the single template at `tmp/question-set-tests/INDEXING-AND-ABSTRACTING.docx`; only the bank titles/subjects differ for sample data.
+- Demo rooms now represent single year/section rosters with `30` current students each. Archived graduate records remain in the data model for global student-history views, but archived student records are no longer shown inside room rosters.
+- `teacher@example.com` gets populated report data:
+  - Rooms: `BLIS 1A` (`B1A26`), `BLIS 2A` (`B2A26`)
+  - Exams: `Cataloging Midterm Mock`, `Reference Services Mock`, `Library Management Sprint`
+- `teacher1@example.com` gets `BLIS 3A` (`B3A26`) with `Indexing Drill Set`.
+- `teacher2@example.com` gets `BLIS 4A` (`B4A26`) with `Information Technology Quiz`.
+- `student@example.com` is enrolled in `BLIS 1A` and has both submitted and in-progress attempts, so student dashboard analytics are non-empty immediately after reseeding.
 
 ## Docker/Runtime Notes
 
@@ -82,8 +105,10 @@ Defined in `database/seeders/DatabaseSeeder.php`:
 - Container name/port conflicts with old projects
   - Check `docker ps` and remove conflicting containers before `up -d`.
 - New backend modules (API-backed):
+  - Staff student directory: `/api/students/directory`
   - Exams: `/api/exams` (CRUD + room assignment + optional `scheduled_at` datetime)
     - Exams now support optional `question_bank_id`.
+    - Room assignments can be archived/restored without deleting the historical exam-session link.
   - Student exam attempts:
     - `POST /api/student/exams/{exam}/start` (room-scoped start/resume)
     - `GET /api/student/exam-attempts/{attempt}`
@@ -91,7 +116,7 @@ Defined in `database/seeders/DatabaseSeeder.php`:
     - `POST /api/student/exam-attempts/{attempt}/submit`
   - Reports: `/api/reports/overview`
   - System settings: `/api/settings/system` (admin can update)
-  - Student room details (`GET /api/rooms/{room}`) expose assigned exams; attempt availability is enforced by `scheduled_at` and question set presence.
+  - Student room details (`GET /api/rooms/{room}`) expose active rosters for room pages and current/archived exams separately; attempt availability is enforced by `scheduled_at`, archive state, and question set presence.
 
 ## Agent Working Style for This Repo
 

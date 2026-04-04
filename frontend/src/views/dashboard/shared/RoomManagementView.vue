@@ -187,6 +187,10 @@
                 </p>
               </div>
               <div class="room-detail-head-actions">
+                <button class="ghost-btn room-head-edit-btn" :disabled="roomLoading || roomDetailsLoading" @click="exportRoomGrades">
+                  <Download :size="14" />
+                  Export Grades
+                </button>
                 <button class="danger-btn room-head-delete-btn" :disabled="roomLoading || roomDetailsLoading" @click="openDeleteRoomModal">
                   <Trash2 :size="14" />
                   Delete
@@ -201,12 +205,20 @@
             <div class="room-detail-grid">
               <article v-if="isStaffRole" class="detail-card">
                 <header class="room-section-head">
-                  <h5>Exams</h5>
+                  <h5>Room Exams</h5>
                 </header>
 
-                <p v-if="selectedRoom.assigned_exams.length === 0" class="muted empty-detail">No exams assigned to this room yet.</p>
-                <div v-else class="exam-card-grid">
-                  <article v-for="exam in selectedRoom.assigned_exams" :key="exam.id" class="exam-card">
+                <div class="management-inline">
+                  <span class="pill success">{{ selectedRoomActiveExams.length }} active</span>
+                  <span class="pill neutral">{{ selectedRoomArchivedExams.length }} archived</span>
+                </div>
+
+                <p v-if="selectedRoomActiveExams.length === 0 && selectedRoomArchivedExams.length === 0" class="muted empty-detail">
+                  No exams assigned to this room yet.
+                </p>
+
+                <div v-if="selectedRoomActiveExams.length > 0" class="exam-card-grid">
+                  <article v-for="exam in selectedRoomActiveExams" :key="exam.id" class="exam-card">
                     <div>
                       <strong class="exam-card-title">{{ exam.title }}</strong>
                       <p class="exam-card-meta">{{ exam.progress ?? '0 / 0 answered' }}</p>
@@ -216,8 +228,9 @@
                       </p>
                     </div>
 
-                    <div v-if="canViewExamResults" class="exam-card-actions">
+                    <div class="exam-card-actions">
                       <button
+                        v-if="canViewExamResults"
                         type="button"
                         class="primary-btn exam-start-btn"
                         :disabled="liveBoardLoading || liveBoardRefreshing"
@@ -226,42 +239,102 @@
                         <BarChart3 :size="14" />
                         Open Live Board
                       </button>
+                      <button
+                        type="button"
+                        class="ghost-btn"
+                        :disabled="roomLoading || roomDetailsLoading"
+                        @click="handleArchiveRoomExam(exam)"
+                      >
+                        <Archive :size="14" />
+                        Archive
+                      </button>
                     </div>
                   </article>
                 </div>
+
+                <details v-if="selectedRoomArchivedExams.length > 0" class="surface-card collapsible-card room-archive-card">
+                  <summary class="collapsible-summary">
+                    <div>
+                      <strong>Archived Exams</strong>
+                      <p class="muted">Moved out of the current room view to reduce clutter.</p>
+                    </div>
+                    <div class="collapsible-summary-meta">
+                      <span class="pill neutral">{{ selectedRoomArchivedExams.length }} archived</span>
+                      <ChevronDown :size="16" class="collapsible-icon" />
+                    </div>
+                  </summary>
+
+                  <div class="collapsible-content">
+                    <div class="exam-card-grid">
+                      <article v-for="exam in selectedRoomArchivedExams" :key="`archived-${exam.id}`" class="exam-card archived-card">
+                        <div>
+                          <strong class="exam-card-title">{{ exam.title }}</strong>
+                          <p class="exam-card-meta">{{ exam.total_items }} items • {{ exam.duration_minutes }} mins</p>
+                          <p class="exam-card-date">
+                            Archived {{ exam.room_archived_at ? new Date(exam.room_archived_at).toLocaleDateString() : 'from current room' }}
+                          </p>
+                        </div>
+
+                        <div class="exam-card-actions">
+                          <button
+                            type="button"
+                            class="ghost-btn"
+                            :disabled="roomLoading || roomDetailsLoading"
+                            @click="handleRestoreRoomExam(exam)"
+                          >
+                            <ArchiveRestore :size="14" />
+                            Restore
+                          </button>
+                        </div>
+                      </article>
+                    </div>
+                  </div>
+                </details>
               </article>
 
               <article class="detail-card">
                 <header class="room-section-head">
-                  <h5>In Room</h5>
+                  <h5>Students In Room</h5>
                 </header>
 
-                <p v-if="selectedRoom.members.length === 0" class="muted empty-detail">No members enrolled yet.</p>
-                <ul v-else class="member-list">
-                  <li v-for="member in selectedRoom.members" :key="member.id" class="member-item">
-                    <span class="member-avatar">
-                      <UserRound :size="16" />
-                    </span>
-                    <div class="member-info">
-                      <strong>{{ member.name }}</strong>
-                      <p>{{ member.email }}</p>
-                    </div>
-                    <div class="member-item-actions">
-                      <span class="pill neutral">{{ displayMemberRole(member.role) }}</span>
-                      <button
-                        v-if="canRemoveRoomMember(member)"
-                        type="button"
-                        class="member-kick-icon-btn"
-                        :aria-label="`Remove ${member.name} from room`"
-                        title="Remove from room"
-                        :disabled="roomLoading || roomDetailsLoading"
-                        @click="handleKickRoomMember(member)"
-                      >
-                        <UserMinus :size="14" />
-                      </button>
-                    </div>
-                  </li>
-                </ul>
+                <div class="management-inline">
+                  <span class="pill success">{{ selectedRoom.members_count ?? selectedRoom.members.length }} current</span>
+                  <span class="pill navy">{{ selectedRoomYearSummary.label }}</span>
+                </div>
+
+                <p class="muted room-roster-copy">{{ selectedRoomRosterCopy }}</p>
+
+                <p v-if="selectedRoomCurrentMembers.length === 0" class="muted empty-detail">
+                  No members enrolled yet.
+                </p>
+
+                <div v-if="selectedRoomCurrentMembers.length > 0" class="room-roster-shell">
+                  <div class="room-roster-grid management">
+                    <article v-for="member in selectedRoomCurrentMembers" :key="member.id" class="room-roster-card">
+                      <div class="room-roster-card-copy">
+                        <strong>{{ member.name }}</strong>
+                        <p v-if="member.student_id">Student ID: {{ member.student_id }}</p>
+                        <p v-else>{{ member.email }}</p>
+                      </div>
+                      <div class="room-roster-card-actions">
+                        <span v-if="selectedRoomYearSummary.is_mixed" class="pill navy">
+                          {{ member.year_level_label || yearLevelLabel(member.year_level) }}
+                        </span>
+                        <button
+                          v-if="canRemoveRoomMember(member)"
+                          type="button"
+                          class="member-kick-icon-btn"
+                          :aria-label="`Remove ${member.name} from room`"
+                          title="Remove from room"
+                          :disabled="roomLoading || roomDetailsLoading"
+                          @click="handleKickRoomMember(member)"
+                        >
+                          <UserMinus :size="14" />
+                        </button>
+                      </div>
+                    </article>
+                  </div>
+                </div>
               </article>
             </div>
           </template>
@@ -374,10 +447,14 @@
 <script setup>
 import {
   AlertCircle,
+  Archive,
+  ArchiveRestore,
   BarChart3,
   CheckCircle2,
   ChevronLeft,
+  ChevronDown,
   DoorOpen,
+  Download,
   FileText,
   House,
   Pencil,
@@ -385,7 +462,6 @@ import {
   RefreshCw,
   Trash2,
   UserMinus,
-  UserRound,
   X,
 } from 'lucide-vue-next'
 import { examDeliveryModeLabel, formatExamSchedule } from '../composables/useDashboardFormatters'
@@ -419,7 +495,12 @@ const {
   liveBoardOptions,
   liveBoardLastUpdatedText,
   roomCollectionLabel,
-  displayMemberRole,
+  selectedRoomActiveExams,
+  selectedRoomArchivedExams,
+  selectedRoomCurrentMembers,
+  selectedRoomYearSummary,
+  selectedRoomRosterCopy,
+  yearLevelLabel,
   canRemoveRoomMember,
   openCreateRoomModal,
   closeCreateRoomModal,
@@ -432,6 +513,8 @@ const {
   handleUpdateRoom,
   handleDeleteRoom,
   handleKickRoomMember,
+  handleArchiveRoomExam,
+  handleRestoreRoomExam,
   openRoomLiveBoard,
   closeRoomLiveBoard,
   loadLiveBoard,
@@ -440,6 +523,7 @@ const {
   liveBoardCellText,
   liveBoardCellClass,
   liveBoardItemSummaryText,
+  exportRoomGrades,
 } = useRoomsModule({ mode: 'management' })
 </script>
 

@@ -12,6 +12,7 @@ use App\Models\SystemSetting;
 use App\Models\User;
 use App\Services\AuditLogService;
 use App\Services\AuthTokenCookieService;
+use App\Services\DashboardAnalyticsService;
 use App\Services\ExamAttemptService;
 use App\Services\ExamDeliveryModeService;
 use App\Services\Library\DocxQuestionParser;
@@ -33,6 +34,7 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 $roleService = app(RoleService::class);
 $auditLogService = app(AuditLogService::class);
 $authTokenCookieService = app(AuthTokenCookieService::class);
+$dashboardAnalyticsService = app(DashboardAnalyticsService::class);
 $deliveryModeService = app(ExamDeliveryModeService::class);
 $examAttemptService = app(ExamAttemptService::class);
 $reportExportService = app(ReportExportService::class);
@@ -232,6 +234,70 @@ $buildAttemptPayload = static function (ExamAttempt $attempt) use ($examAttemptS
     return $examAttemptService->buildAttemptPayload($attempt);
 };
 
+$syncExamRoomAssignments = static function (Exam $exam, array $roomIds, User $actor): void {
+    $normalizedRoomIds = collect($roomIds)
+        ->map(fn ($id) => (int) $id)
+        ->filter(fn ($id) => $id > 0)
+        ->unique()
+        ->values();
+
+    $existingAssignments = DB::table('exam_room')
+        ->where('exam_id', $exam->id)
+        ->get()
+        ->keyBy(fn ($assignment) => (int) $assignment->room_id);
+
+    $now = now();
+
+    foreach ($normalizedRoomIds as $roomId) {
+        $existingAssignment = $existingAssignments->get($roomId);
+
+        if ($existingAssignment) {
+            DB::table('exam_room')
+                ->where('exam_id', $exam->id)
+                ->where('room_id', $roomId)
+                ->update([
+                    'assigned_by' => $actor->id,
+                    'archived_at' => null,
+                    'archived_by' => null,
+                    'updated_at' => $now,
+                ]);
+
+            continue;
+        }
+
+        DB::table('exam_room')->insert([
+            'exam_id' => $exam->id,
+            'room_id' => $roomId,
+            'assigned_by' => $actor->id,
+            'archived_at' => null,
+            'archived_by' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
+    $roomIdsToArchive = $existingAssignments
+        ->filter(fn ($assignment) => is_null($assignment->archived_at))
+        ->keys()
+        ->map(fn ($id) => (int) $id)
+        ->diff($normalizedRoomIds)
+        ->values();
+
+    if ($roomIdsToArchive->isEmpty()) {
+        return;
+    }
+
+    DB::table('exam_room')
+        ->where('exam_id', $exam->id)
+        ->whereIn('room_id', $roomIdsToArchive->all())
+        ->whereNull('archived_at')
+        ->update([
+            'archived_at' => $now,
+            'archived_by' => $actor->id,
+            'updated_at' => $now,
+        ]);
+};
+
 Route::post('/auth/register', function (Request $request) use ($recordAudit, $authTokenCookieService) {
     $registrationSetting = SystemSetting::query()
         ->where('key', 'allow_public_registration')
@@ -252,6 +318,7 @@ Route::post('/auth/register', function (Request $request) use ($recordAudit, $au
         'middle_name' => ['nullable', 'string', 'max:255'],
         'last_name' => ['required', 'string', 'max:255'],
         'student_id' => ['required', 'string', 'max:32', 'regex:/^\d{7,20}$/', 'unique:users,student_id'],
+        'year_level' => ['required', Rule::in(User::YEAR_LEVELS)],
         'email' => ['required', 'email', 'max:255', 'unique:users,email'],
         'password' => ['required', 'min:8', 'confirmed'],
         'agreed' => ['required', 'accepted'],
@@ -270,6 +337,7 @@ Route::post('/auth/register', function (Request $request) use ($recordAudit, $au
         'middle_name' => $middleName !== '' ? $middleName : null,
         'last_name' => $lastName,
         'student_id' => trim((string) $validated['student_id']),
+        'year_level' => (int) $validated['year_level'],
         'email' => $validated['email'],
         'role' => User::ROLE_STUDENT,
         'is_active' => true,
@@ -366,9 +434,11 @@ Route::middleware('auth:sanctum')->group(function () use (
     $systemSettingBooleanKeys,
     $systemSettingDefaults,
     $authTokenCookieService,
+    $dashboardAnalyticsService,
     $ensureTeacherReportAccess,
     $reportExportService,
     $reviewBotService,
+    $syncExamRoomAssignments,
 ) {
     Route::get('/auth/me', function (Request $request) use ($ensureActive) {
         if ($inactiveResponse = $ensureActive($request)) {
@@ -400,7 +470,16 @@ Route::middleware('auth:sanctum')->group(function () use (
         if ($canManageRooms($user)) {
             $roomsQuery = Room::query()
                 ->with('creator:id,name')
-                ->withCount(['members', 'exams'])
+                ->withCount([
+                    'members as members_count' => fn ($query) => $query
+                        ->where('users.role', User::ROLE_STUDENT)
+                        ->whereNull('users.archived_at'),
+                    'exams as exams_count' => fn ($query) => $query
+                        ->whereNull('exam_room.archived_at'),
+                    'archivedStudentMembers as archived_members_count',
+                    'archivedExams as archived_exams_count',
+                ])
+                ->whereNull('rooms.archived_at')
                 ->latest();
 
             if (!$isAdmin($user)) {
@@ -411,7 +490,16 @@ Route::middleware('auth:sanctum')->group(function () use (
         } else {
             $rooms = $user->rooms()
                 ->with('creator:id,name')
-                ->withCount(['members', 'exams'])
+                ->withCount([
+                    'members as members_count' => fn ($query) => $query
+                        ->where('users.role', User::ROLE_STUDENT)
+                        ->whereNull('users.archived_at'),
+                    'exams as exams_count' => fn ($query) => $query
+                        ->whereNull('exam_room.archived_at'),
+                    'archivedStudentMembers as archived_members_count',
+                    'archivedExams as archived_exams_count',
+                ])
+                ->whereNull('rooms.archived_at')
                 ->orderByDesc('rooms.created_at')
                 ->get();
         }
@@ -438,48 +526,71 @@ Route::middleware('auth:sanctum')->group(function () use (
         }
 
         $members = $room->members()
-            ->select('users.id', 'users.name', 'users.email', 'users.student_id', 'users.role', 'users.is_active')
+            ->select('users.id', 'users.name', 'users.email', 'users.student_id', 'users.role', 'users.is_active', 'users.year_level', 'users.archived_at')
+            ->where('users.role', User::ROLE_STUDENT)
+            ->whereNull('users.archived_at')
+            ->orderByRaw('CASE WHEN users.year_level IS NULL THEN 5 ELSE users.year_level END')
+            ->orderBy('users.name')
+            ->get();
+
+        $archivedMembers = $room->members()
+            ->select('users.id', 'users.name', 'users.email', 'users.student_id', 'users.role', 'users.is_active', 'users.year_level', 'users.archived_at')
+            ->where('users.role', User::ROLE_STUDENT)
+            ->whereNotNull('users.archived_at')
             ->orderBy('users.name')
             ->get();
 
         $assignedExams = collect();
+        $archivedExams = collect();
 
         if (!$isAdmin($user)) {
-            $assignedExams = $room->exams()
-                ->with([
-                    'questionBank:id,title,subject,total_items',
-                    'questionBanks:id,title,subject,total_items',
-                ])
-                ->select(
-                    'exams.id',
-                    'exams.title',
-                    'exams.subject',
-                    'exams.question_bank_id',
-                    'exams.total_items',
-                    'exams.duration_minutes',
-                    'exams.scheduled_at',
-                    'exams.schedule_start_at',
-                    'exams.schedule_end_at',
-                    'exams.delivery_mode',
-                    'exams.one_take_only',
-                    'exams.shuffle_questions',
-                    'exam_room.created_at as assigned_at'
-                )
-                ->orderByDesc('exam_room.created_at')
-                ->get()
-                ->map(function ($assignedExam) use ($normalizeDeliveryMode) {
-                    $assignedExam->delivery_mode = $normalizeDeliveryMode($assignedExam->delivery_mode);
-                    $assignedExam->question_bank_ids = $assignedExam->resolvedQuestionBankIds();
+            $loadRoomExams = static function ($relation, bool $archived) use ($normalizeDeliveryMode) {
+                return $relation
+                    ->with([
+                        'questionBank:id,title,subject,total_items',
+                        'questionBanks:id,title,subject,total_items',
+                    ])
+                    ->select(
+                        'exams.id',
+                        'exams.title',
+                        'exams.subject',
+                        'exams.question_bank_id',
+                        'exams.total_items',
+                        'exams.duration_minutes',
+                        'exams.scheduled_at',
+                        'exams.schedule_start_at',
+                        'exams.schedule_end_at',
+                        'exams.delivery_mode',
+                        'exams.one_take_only',
+                        'exams.shuffle_questions',
+                        'exam_room.created_at as assigned_at',
+                        'exam_room.archived_at as room_archived_at'
+                    )
+                    ->orderByDesc($archived ? 'exam_room.archived_at' : 'exam_room.created_at')
+                    ->get()
+                    ->map(function ($assignedExam) use ($normalizeDeliveryMode, $archived) {
+                        $assignedExam->delivery_mode = $normalizeDeliveryMode($assignedExam->delivery_mode);
+                        $assignedExam->question_bank_ids = $assignedExam->resolvedQuestionBankIds();
+                        $assignedExam->room_assignment_archived = $archived;
 
-                    return $assignedExam;
-                })
-                ->values();
+                        return $assignedExam;
+                    })
+                    ->values();
+            };
+
+            $assignedExams = $loadRoomExams($room->activeExams(), false);
+            $archivedExams = $loadRoomExams($room->archivedExams(), true);
         }
 
-        if (!$canManageRooms($user) && $assignedExams->isNotEmpty()) {
+        if (
+            !$canManageRooms($user)
+            && ($assignedExams->isNotEmpty() || $archivedExams->isNotEmpty())
+        ) {
             $examIds = $assignedExams
+                ->concat($archivedExams)
                 ->pluck('id')
                 ->map(fn ($id) => (int) $id)
+                ->unique()
                 ->all();
 
             $attemptsByExamId = ExamAttempt::query()
@@ -495,45 +606,84 @@ Route::middleware('auth:sanctum')->group(function () use (
                 ->get()
                 ->groupBy('exam_id');
 
-            $assignedExams = $assignedExams
-                ->map(function ($assignedExam) use ($attemptsByExamId, $room) {
-                    $attempts = $attemptsByExamId->get((int) $assignedExam->id, collect());
-                    $submittedAttempts = $attempts->filter(
-                        fn (ExamAttempt $attempt) => $attempt->status === ExamAttempt::STATUS_SUBMITTED
-                    );
+            $appendStudentAttemptState = static function ($roomExams, bool $archivedAssignment) use ($attemptsByExamId, $room) {
+                return $roomExams
+                    ->map(function ($assignedExam) use ($attemptsByExamId, $room, $archivedAssignment) {
+                        $attempts = $attemptsByExamId->get((int) $assignedExam->id, collect());
+                        $submittedAttempts = $attempts->filter(
+                            fn (ExamAttempt $attempt) => $attempt->status === ExamAttempt::STATUS_SUBMITTED
+                        );
 
-                    $inProgressAttempt = $attempts->first(
-                        fn (ExamAttempt $attempt) => $attempt->status === ExamAttempt::STATUS_IN_PROGRESS
-                            && (int) $attempt->room_id === (int) $room->id
-                    );
+                        $inProgressAttempt = $attempts->first(
+                            fn (ExamAttempt $attempt) => $attempt->status === ExamAttempt::STATUS_IN_PROGRESS
+                                && (int) $attempt->room_id === (int) $room->id
+                        );
 
-                    $submittedAttempt = $submittedAttempts->first();
-                    $submittedAttemptCount = (int) $submittedAttempts->count();
-                    $maxAllowedAttempts = (bool) $assignedExam->one_take_only ? 1 : 2;
-                    $remainingAttempts = max(0, $maxAllowedAttempts - $submittedAttemptCount);
+                        $submittedAttempt = $submittedAttempts->first();
+                        $submittedAttemptCount = (int) $submittedAttempts->count();
+                        $maxAllowedAttempts = (bool) $assignedExam->one_take_only ? 1 : 2;
+                        $remainingAttempts = max(0, $maxAllowedAttempts - $submittedAttemptCount);
 
-                    $attemptState = 'not_started';
-                    $latestAttemptId = null;
+                        $attemptState = 'not_started';
+                        $latestAttemptId = null;
 
-                    if ($inProgressAttempt) {
-                        $attemptState = 'in_progress';
-                        $latestAttemptId = (int) $inProgressAttempt->id;
-                    } elseif ($submittedAttempt) {
-                        $attemptState = 'submitted';
-                        $latestAttemptId = (int) $submittedAttempt->id;
-                    }
+                        if ($inProgressAttempt) {
+                            $attemptState = 'in_progress';
+                            $latestAttemptId = (int) $inProgressAttempt->id;
+                        } elseif ($submittedAttempt) {
+                            $attemptState = 'submitted';
+                            $latestAttemptId = (int) $submittedAttempt->id;
+                        }
 
-                    $assignedExam->student_attempt_state = $attemptState;
-                    $assignedExam->student_attempt_id = $latestAttemptId;
-                    $assignedExam->student_submitted_at = $submittedAttempt?->submitted_at;
-                    $assignedExam->student_submitted_attempts = $submittedAttemptCount;
-                    $assignedExam->student_max_attempts = $maxAllowedAttempts;
-                    $assignedExam->student_attempts_remaining = $remainingAttempts;
-                    $assignedExam->student_can_start_attempt = $remainingAttempts > 0;
+                        $assignedExam->student_attempt_state = $attemptState;
+                        $assignedExam->student_attempt_id = $latestAttemptId;
+                        $assignedExam->student_submitted_at = $submittedAttempt?->submitted_at;
+                        $assignedExam->student_submitted_attempts = $submittedAttemptCount;
+                        $assignedExam->student_max_attempts = $maxAllowedAttempts;
+                        $assignedExam->student_attempts_remaining = $remainingAttempts;
+                        $assignedExam->student_can_start_attempt = !$archivedAssignment && $remainingAttempts > 0;
+                        $assignedExam->room_assignment_archived = $archivedAssignment;
 
+                        return $assignedExam;
+                    })
+                    ->values();
+            };
+
+            $assignedExams = $appendStudentAttemptState($assignedExams, false);
+            $archivedExams = $appendStudentAttemptState($archivedExams, true);
+        }
+
+        if (
+            $canManageRooms($user)
+            && ($assignedExams->isNotEmpty() || $archivedExams->isNotEmpty())
+        ) {
+            $examIds = $assignedExams
+                ->concat($archivedExams)
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->all();
+
+            $roomAttempts = ExamAttempt::query()
+                ->whereIn('exam_id', $examIds)
+                ->where('room_id', $room->id)
+                ->where('status', ExamAttempt::STATUS_SUBMITTED)
+                ->selectRaw('exam_id, COUNT(DISTINCT user_id) as submitted_count')
+                ->groupBy('exam_id')
+                ->pluck('submitted_count', 'exam_id');
+
+            $activeStudentCount = $members->count();
+
+            $appendStaffAttemptState = static function ($roomExams) use ($roomAttempts, $activeStudentCount) {
+                return $roomExams->map(function ($assignedExam) use ($roomAttempts, $activeStudentCount) {
+                    $submittedCount = (int) $roomAttempts->get((int) $assignedExam->id, 0);
+                    $assignedExam->progress = "{$submittedCount} / {$activeStudentCount} submitted";
                     return $assignedExam;
-                })
-                ->values();
+                })->values();
+            };
+
+            $assignedExams = $appendStaffAttemptState($assignedExams);
+            $archivedExams = $appendStaffAttemptState($archivedExams);
         }
 
         $roomData = [
@@ -544,8 +694,11 @@ Route::middleware('auth:sanctum')->group(function () use (
             'created_at' => $room->created_at,
             'updated_at' => $room->updated_at,
             'members_count' => $members->count(),
+            'archived_members_count' => $archivedMembers->count(),
             'members' => $members,
+            'archived_members' => $archivedMembers,
             'assigned_exams' => $assignedExams,
+            'archived_exams' => $archivedExams,
         ];
 
         return response()->json(['room' => $roomData]);
@@ -576,7 +729,13 @@ Route::middleware('auth:sanctum')->group(function () use (
             'name' => $validated['name'],
         ]);
 
-        $room->load('creator:id,name')->loadCount(['members', 'exams']);
+        $room->load('creator:id,name')->loadCount([
+            'members as members_count' => fn ($query) => $query
+                ->where('users.role', User::ROLE_STUDENT)
+                ->whereNull('users.archived_at'),
+            'exams as exams_count' => fn ($query) => $query
+                ->whereNull('exam_room.archived_at'),
+        ]);
 
         $recordAudit(
             $user,
@@ -628,6 +787,189 @@ Route::middleware('auth:sanctum')->group(function () use (
         return response()->json(['message' => 'Room deleted']);
     });
 
+    Route::get('/rooms/{room}/export-grades', function (Request $request, Room $room) use ($canManageRooms, $ensureActive) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+        if (!$canManageRooms($user) && (int)$room->created_by !== (int)$user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $exams = $room->exams()->orderBy('exam_room.created_at')->get();
+        $members = $room->members()->where('role', \App\Models\User::ROLE_STUDENT)->orderBy('name')->get();
+
+        $headers = [
+            "Content-type"        => "text/csv",
+            "Content-Disposition" => "attachment; filename=room-grades-{$room->id}.csv",
+            "Pragma"              => "no-cache",
+            "Cache-Control"       => "must-revalidate, post-check=0, pre-check=0",
+            "Expires"             => "0"
+        ];
+
+        $callback = function() use ($exams, $members, $room) {
+            $file = fopen('php://output', 'w');
+
+            $headerRow = ['Student Name', 'ID Number', 'Email'];
+            foreach ($exams as $exam) {
+                $headerRow[] = $exam->title . " (Score/Total)";
+            }
+            fputcsv($file, $headerRow);
+
+            foreach ($members as $student) {
+                $row = [
+                    $student->name,
+                    $student->student_id ?? 'N/A',
+                    $student->email,
+                ];
+
+                foreach ($exams as $exam) {
+                    $attempt = \App\Models\ExamAttempt::where('exam_id', $exam->id)
+                        ->where('user_id', $student->id)
+                        ->where('room_id', $room->id)
+                        ->latest('submitted_at')
+                        ->first();
+
+                    if ($attempt && $attempt->status === \App\Models\ExamAttempt::STATUS_SUBMITTED) {
+                        $row[] = "{$attempt->score}/{$exam->total_items}";
+                    } else {
+                        $row[] = 'N/A';
+                    }
+                }
+                fputcsv($file, $row);
+            }
+
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
+    });
+
+    Route::post('/rooms/{room}/exams/{exam}/archive', function (
+        Request $request,
+        Room $room,
+        Exam $exam
+    ) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$isAdmin($user) && ((int) $room->created_by !== (int) $user->id || (int) $exam->created_by !== (int) $user->id)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $assignment = DB::table('exam_room')
+            ->where('exam_id', $exam->id)
+            ->where('room_id', $room->id)
+            ->first();
+
+        if (!$assignment) {
+            return response()->json(['message' => 'Exam assignment not found for this room.'], 404);
+        }
+
+        if (!is_null($assignment->archived_at)) {
+            return response()->json(['message' => 'This exam is already archived in the selected room.'], 422);
+        }
+
+        $archivedAt = now();
+
+        DB::table('exam_room')
+            ->where('exam_id', $exam->id)
+            ->where('room_id', $room->id)
+            ->update([
+                'archived_at' => $archivedAt,
+                'archived_by' => $user->id,
+                'updated_at' => $archivedAt,
+            ]);
+
+        $recordAudit(
+            $user,
+            'room.exam.archive',
+            'room',
+            $room->id,
+            'Archived exam from room',
+            [
+                'room_id' => $room->id,
+                'exam_id' => $exam->id,
+                'exam_title' => $exam->title,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Exam archived from this room.',
+        ]);
+    });
+
+    Route::post('/rooms/{room}/exams/{exam}/restore', function (
+        Request $request,
+        Room $room,
+        Exam $exam
+    ) use ($canManageRooms, $ensureActive, $isAdmin, $recordAudit) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$canManageRooms($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$isAdmin($user) && ((int) $room->created_by !== (int) $user->id || (int) $exam->created_by !== (int) $user->id)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $assignment = DB::table('exam_room')
+            ->where('exam_id', $exam->id)
+            ->where('room_id', $room->id)
+            ->first();
+
+        if (!$assignment) {
+            return response()->json(['message' => 'Exam assignment not found for this room.'], 404);
+        }
+
+        if (is_null($assignment->archived_at)) {
+            return response()->json(['message' => 'This exam is already active in the selected room.'], 422);
+        }
+
+        $restoredAt = now();
+
+        DB::table('exam_room')
+            ->where('exam_id', $exam->id)
+            ->where('room_id', $room->id)
+            ->update([
+                'archived_at' => null,
+                'archived_by' => null,
+                'updated_at' => $restoredAt,
+            ]);
+
+        $recordAudit(
+            $user,
+            'room.exam.restore',
+            'room',
+            $room->id,
+            'Restored exam to room',
+            [
+                'room_id' => $room->id,
+                'exam_id' => $exam->id,
+                'exam_title' => $exam->title,
+            ],
+            $request,
+        );
+
+        return response()->json([
+            'message' => 'Exam restored to this room.',
+        ]);
+    });
+
     Route::post('/rooms', function (Request $request) use ($isStaffMasterExaminer, $ensureActive, $recordAudit) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
@@ -673,6 +1015,12 @@ Route::middleware('auth:sanctum')->group(function () use (
             return $inactiveResponse;
         }
 
+        if ($request->user()?->role === User::ROLE_STUDENT && !is_null($request->user()?->archived_at)) {
+            return response()->json([
+                'message' => 'Archived student records can no longer join active rooms.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'code' => ['required', 'string', 'max:12'],
         ]);
@@ -682,10 +1030,40 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json(['message' => 'Room code not found'], 404);
         }
 
-        $request->user()->rooms()->syncWithoutDetaching([$room->id]);
+        $user = $request->user();
+
+        if ($user?->role === User::ROLE_STUDENT) {
+            $studentYearLevel = !is_null($user->year_level)
+                ? (int) $user->year_level
+                : null;
+
+            $roomYearLevels = $room->members()
+                ->where('users.role', User::ROLE_STUDENT)
+                ->whereNull('users.archived_at')
+                ->where('users.id', '!=', $user->id)
+                ->pluck('users.year_level')
+                ->filter(fn ($yearLevel) => !is_null($yearLevel))
+                ->map(fn ($yearLevel) => (int) $yearLevel)
+                ->unique()
+                ->values();
+
+            if ($roomYearLevels->count() > 1) {
+                return response()->json([
+                    'message' => 'This room already mixes year levels. Clean up the roster before allowing more student joins.',
+                ], 422);
+            }
+
+            if ($roomYearLevels->isNotEmpty() && (!is_int($studentYearLevel) || (int) $roomYearLevels->first() !== $studentYearLevel)) {
+                return response()->json([
+                    'message' => 'You can only join rooms that match your year level section.',
+                ], 422);
+            }
+        }
+
+        $user->rooms()->syncWithoutDetaching([$room->id]);
 
         $recordAudit(
-            $request->user(),
+            $user,
             'room.join',
             'room',
             $room->id,
@@ -1202,6 +1580,22 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
     });
 
+    Route::get('/student/analytics/overview', function (Request $request) use ($dashboardAnalyticsService, $ensureActive) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if ($user->role !== User::ROLE_STUDENT) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        return response()->json(
+            $dashboardAnalyticsService->buildStudentOverview($user)
+        );
+    });
+
     Route::get('/exams', function (Request $request) use ($isStaffMasterExaminer, $ensureActive, $normalizeDeliveryMode) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
@@ -1218,11 +1612,23 @@ Route::middleware('auth:sanctum')->group(function () use (
             ->with([
                 'questionBank:id,title,subject,total_items',
                 'questionBanks:id,title,subject,total_items',
-                'rooms:id,name,code',
+                'rooms' => fn ($query) => $query
+                    ->select('rooms.id', 'rooms.name', 'rooms.code')
+                    ->whereNull('exam_room.archived_at'),
+                'archivedRooms:id,name,code',
             ])
-            ->withCount('rooms')
+            ->withCount([
+                'rooms as active_rooms_count' => fn ($query) => $query
+                    ->whereNull('exam_room.archived_at'),
+                'archivedRooms as archived_rooms_count',
+            ])
             ->where('created_by', $user->id)
             ->latest();
+
+        $managedRooms = Room::query()
+            ->where('created_by', $user->id)
+            ->whereNull('archived_at')
+            ->get(['id', 'name', 'code']);
 
         $exams = $query->get()->map(function (Exam $exam) use ($normalizeDeliveryMode) {
             $exam->delivery_mode = $normalizeDeliveryMode($exam->delivery_mode);
@@ -1267,6 +1673,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             'schedule_end_at' => ['nullable', 'date'],
             'one_take_only' => ['nullable', 'boolean'],
             'shuffle_questions' => ['nullable', 'boolean'],
+            'results_visibility_mode' => ['nullable', 'string', 'in:hidden,visible'],
             'room_ids' => ['nullable', 'array'],
             'room_ids.*' => ['integer', 'exists:rooms,id'],
         ]);
@@ -1309,6 +1716,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             'delivery_mode' => $deliveryMode,
             'one_take_only' => (bool) ($validated['one_take_only'] ?? false),
             'shuffle_questions' => (bool) ($validated['shuffle_questions'] ?? false),
+            'results_visibility_mode' => $validated['results_visibility_mode'] ?? 'hidden',
             'created_by' => $user->id,
         ]);
 
@@ -1330,22 +1738,22 @@ Route::middleware('auth:sanctum')->group(function () use (
                 ], 422);
             }
 
-            $now = now();
-            $syncPayload = $roomIds->mapWithKeys(fn ($roomId) => [$roomId => [
-                'assigned_by' => $user->id,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]])->all();
-
-            $exam->rooms()->sync($syncPayload);
+            $syncExamRoomAssignments($exam, $roomIds->all(), $user);
         }
 
         $exam->load([
             'creator:id,name',
             'questionBank:id,title,subject,total_items',
             'questionBanks:id,title,subject,total_items',
-            'rooms:id,name,code',
-        ])->loadCount('rooms');
+            'rooms' => fn ($query) => $query
+                ->select('rooms.id', 'rooms.name', 'rooms.code')
+                ->whereNull('exam_room.archived_at'),
+            'archivedRooms:id,name,code',
+        ])->loadCount([
+            'rooms as active_rooms_count' => fn ($query) => $query
+                ->whereNull('exam_room.archived_at'),
+            'archivedRooms as archived_rooms_count',
+        ]);
         $exam->question_bank_ids = $exam->resolvedQuestionBankIds();
 
         $recordAudit(
@@ -1364,7 +1772,8 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'question_bank_ids' => $exam->question_bank_ids,
                 'one_take_only' => (bool) $exam->one_take_only,
                 'shuffle_questions' => (bool) $exam->shuffle_questions,
-                'rooms_assigned' => $exam->rooms_count,
+                'rooms_assigned' => $exam->active_rooms_count,
+                'rooms_archived' => $exam->archived_rooms_count,
             ],
             $request,
         );
@@ -1412,6 +1821,7 @@ Route::middleware('auth:sanctum')->group(function () use (
             'schedule_end_at' => ['sometimes', 'nullable', 'date'],
             'one_take_only' => ['sometimes', 'boolean'],
             'shuffle_questions' => ['sometimes', 'boolean'],
+            'results_visibility_mode' => ['sometimes', 'string', 'in:hidden,visible'],
             'room_ids' => ['sometimes', 'array'],
             'room_ids.*' => ['integer', 'exists:rooms,id'],
         ]);
@@ -1481,22 +1891,22 @@ Route::middleware('auth:sanctum')->group(function () use (
                 }
             }
 
-            $now = now();
-            $syncPayload = $roomIds->mapWithKeys(fn ($roomId) => [$roomId => [
-                'assigned_by' => $user->id,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]])->all();
-
-            $exam->rooms()->sync($syncPayload);
+            $syncExamRoomAssignments($exam, $roomIds->all(), $user);
         }
 
         $exam->load([
             'creator:id,name',
             'questionBank:id,title,subject,total_items',
             'questionBanks:id,title,subject,total_items',
-            'rooms:id,name,code',
-        ])->loadCount('rooms');
+            'rooms' => fn ($query) => $query
+                ->select('rooms.id', 'rooms.name', 'rooms.code')
+                ->whereNull('exam_room.archived_at'),
+            'archivedRooms:id,name,code',
+        ])->loadCount([
+            'rooms as active_rooms_count' => fn ($query) => $query
+                ->whereNull('exam_room.archived_at'),
+            'archivedRooms as archived_rooms_count',
+        ]);
         $exam->question_bank_ids = $exam->resolvedQuestionBankIds();
 
         $recordAudit(
@@ -1515,7 +1925,8 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'question_bank_ids' => $exam->question_bank_ids,
                 'one_take_only' => (bool) $exam->one_take_only,
                 'shuffle_questions' => (bool) $exam->shuffle_questions,
-                'rooms_assigned' => $exam->rooms_count,
+                'rooms_assigned' => $exam->active_rooms_count,
+                'rooms_archived' => $exam->archived_rooms_count,
             ],
             $request,
         );
@@ -1560,6 +1971,27 @@ Route::middleware('auth:sanctum')->group(function () use (
         );
 
         return response()->json(['message' => 'Exam deleted']);
+    });
+
+    Route::get('/exams/{exam}/item-analytics', function (Request $request, Exam $exam) use (
+        $isStaffMasterExaminer,
+        $isAdmin,
+        $ensureActive,
+        $dashboardAnalyticsService
+    ) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
+
+        $user = $request->user();
+
+        if (!$isAdmin($user) && (int) $exam->created_by !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        return response()->json([
+            'item_analytics' => $dashboardAnalyticsService->buildItemDifficulty($exam),
+        ]);
     });
 
     Route::get('/exams/{exam}/live-dashboard', function (Request $request, Exam $exam) use (
@@ -1610,6 +2042,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $students = $room->members()
             ->select('users.id', 'users.name', 'users.email', 'users.student_id')
             ->where('users.role', User::ROLE_STUDENT)
+            ->whereNull('users.archived_at')
             ->orderBy('users.name')
             ->get();
 
@@ -1854,6 +2287,37 @@ Route::middleware('auth:sanctum')->group(function () use (
             ], 422);
         }
 
+        $existingAttempt = ExamAttempt::query()
+            ->where('exam_id', $exam->id)
+            ->where('room_id', $roomId)
+            ->where('user_id', $user->id)
+            ->where('status', ExamAttempt::STATUS_IN_PROGRESS)
+            ->latest('started_at')
+            ->first();
+
+        if ($existingAttempt) {
+            $existingAttempt = $autoSubmitExpiredAttempt($existingAttempt);
+
+            if ($existingAttempt->status === ExamAttempt::STATUS_IN_PROGRESS) {
+                return response()->json([
+                    'message' => 'Resuming your active attempt.',
+                    'resumed' => true,
+                    ...$buildAttemptPayload($existingAttempt),
+                ]);
+            }
+        }
+
+        $isActiveAssignment = $exam->rooms()
+            ->where('rooms.id', $roomId)
+            ->whereNull('exam_room.archived_at')
+            ->exists();
+
+        if (!$isActiveAssignment) {
+            return response()->json([
+                'message' => 'This exam is archived in the selected room and is no longer open for new attempts.',
+            ], 422);
+        }
+
         $scheduleStartAt = $exam->schedule_start_at ?? $exam->scheduled_at;
         $scheduleEndAt = $exam->schedule_end_at;
 
@@ -1900,26 +2364,6 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json([
                 'message' => 'No questions are available for this exam.',
             ], 422);
-        }
-
-        $existingAttempt = ExamAttempt::query()
-            ->where('exam_id', $exam->id)
-            ->where('room_id', $roomId)
-            ->where('user_id', $user->id)
-            ->where('status', ExamAttempt::STATUS_IN_PROGRESS)
-            ->latest('started_at')
-            ->first();
-
-        if ($existingAttempt) {
-            $existingAttempt = $autoSubmitExpiredAttempt($existingAttempt);
-
-            if ($existingAttempt->status === ExamAttempt::STATUS_IN_PROGRESS) {
-                return response()->json([
-                    'message' => 'Resuming your active attempt.',
-                    'resumed' => true,
-                    ...$buildAttemptPayload($existingAttempt),
-                ]);
-            }
         }
 
         $submittedAttemptCount = ExamAttempt::query()
@@ -2316,7 +2760,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         ]);
     });
 
-    Route::get('/reports/overview', function (Request $request) use ($isStaffMasterExaminer, $ensureActive) {
+    Route::get('/reports/overview', function (Request $request) use ($dashboardAnalyticsService, $isStaffMasterExaminer, $ensureActive) {
         if ($inactiveResponse = $ensureActive($request)) {
             return $inactiveResponse;
         }
@@ -2327,34 +2771,25 @@ Route::middleware('auth:sanctum')->group(function () use (
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        $staffRooms = Room::query()->where('created_by', $user->id);
-        $staffExams = Exam::query()->where('created_by', $user->id);
+        return response()->json(
+            $dashboardAnalyticsService->buildStaffReportOverview($user)
+        );
+    });
 
-        $metrics = [
-            'managed_rooms' => $staffRooms->count(),
-            'managed_exams' => $staffExams->count(),
-            'students_enrolled' => DB::table('room_user')
-                ->join('rooms', 'rooms.id', '=', 'room_user.room_id')
-                ->where('rooms.created_by', $user->id)
-                ->distinct('room_user.user_id')
-                ->count('room_user.user_id'),
-            'exam_assignments' => DB::table('exam_room')
-                ->join('exams', 'exams.id', '=', 'exam_room.exam_id')
-                ->where('exams.created_by', $user->id)
-                ->count(),
-        ];
+    Route::get('/students/directory', function (Request $request) use ($dashboardAnalyticsService, $canManageRooms, $isAdmin, $ensureActive) {
+        if ($inactiveResponse = $ensureActive($request)) {
+            return $inactiveResponse;
+        }
 
-        $recentActivity = AuditLog::query()
-            ->with('actor:id,name,role')
-            ->where('actor_id', $user->id)
-            ->latest()
-            ->limit(14)
-            ->get();
+        $user = $request->user();
 
-        return response()->json([
-            'metrics' => $metrics,
-            'recent_activity' => $recentActivity,
-        ]);
+        if (!$isAdmin($user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        return response()->json(
+            $dashboardAnalyticsService->buildStudentDirectory()
+        );
     });
 
     Route::get('/reports/exams/{exam}/rooms/{room}/complete-results.csv', function (
@@ -2762,6 +3197,7 @@ Route::middleware('auth:sanctum')->group(function () use (
         $students = $room->members()
             ->select('users.id', 'users.name', 'users.email', 'users.student_id', 'users.email_verified_at', 'users.role')
             ->where('users.role', User::ROLE_STUDENT)
+            ->whereNull('users.archived_at')
             ->orderBy('users.name')
             ->get();
 
@@ -3064,15 +3500,17 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'search' => ['nullable', 'string', 'max:255'],
                 'role' => ['nullable', Rule::in(User::ROLES)],
                 'status' => ['nullable', Rule::in(['active', 'inactive'])],
+                'year_level' => ['nullable', Rule::in(User::YEAR_LEVELS)],
+                'archive_state' => ['nullable', Rule::in(['current', 'archived', 'all'])],
                 'page' => ['nullable', 'integer', 'min:1'],
-                'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+                'per_page' => ['nullable', 'integer', 'min:1', 'max:250'],
             ]);
 
             $page = (int) ($validated['page'] ?? 1);
-            $perPage = (int) ($validated['per_page'] ?? 50);
+            $perPage = (int) ($validated['per_page'] ?? 200);
 
             $users = User::query()
-                ->select('id', 'name', 'email', 'student_id', 'role', 'is_active', 'created_at', 'updated_at')
+                ->select('id', 'name', 'email', 'student_id', 'role', 'year_level', 'is_active', 'archived_at', 'created_at', 'updated_at')
                 ->when(
                     filled($validated['search'] ?? null),
                     fn ($query) => $query->where(function ($inner) use ($validated) {
@@ -3090,6 +3528,16 @@ Route::middleware('auth:sanctum')->group(function () use (
                 ->when(
                     filled($validated['status'] ?? null),
                     fn ($query) => $query->where('is_active', $validated['status'] === 'active')
+                )
+                ->when(
+                    filled($validated['year_level'] ?? null),
+                    fn ($query) => $query->where('year_level', (int) $validated['year_level'])
+                )
+                ->when(
+                    filled($validated['archive_state'] ?? null) && $validated['archive_state'] !== 'all',
+                    fn ($query) => $validated['archive_state'] === 'archived'
+                        ? $query->whereNotNull('archived_at')
+                        : $query->whereNull('archived_at')
                 )
                 ->orderByDesc('id')
                 ->paginate($perPage, ['*'], 'page', $page);
@@ -3129,12 +3577,25 @@ Route::middleware('auth:sanctum')->group(function () use (
                     'unique:users,student_id',
                 ],
                 'role' => ['required', Rule::in(User::ROLES)],
+                'year_level' => [
+                    Rule::requiredIf(fn () => $request->input('role') === User::ROLE_STUDENT),
+                    'nullable',
+                    'integer',
+                    Rule::in(User::YEAR_LEVELS),
+                ],
                 'password' => ['required', 'string', 'min:8'],
                 'is_active' => ['nullable', 'boolean'],
+                'archived' => ['nullable', 'boolean'],
             ]);
 
             $normalizedStudentId = filled($validated['student_id'] ?? null)
                 ? trim((string) $validated['student_id'])
+                : null;
+            $normalizedYearLevel = filled($validated['year_level'] ?? null)
+                ? (int) $validated['year_level']
+                : null;
+            $archivedAt = ($validated['role'] ?? null) === User::ROLE_STUDENT && (bool) ($validated['archived'] ?? false)
+                ? now()
                 : null;
 
             $user = User::create([
@@ -3142,7 +3603,9 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'email' => $validated['email'],
                 'student_id' => $validated['role'] === User::ROLE_STUDENT ? $normalizedStudentId : null,
                 'role' => $validated['role'],
+                'year_level' => $validated['role'] === User::ROLE_STUDENT ? $normalizedYearLevel : null,
                 'is_active' => $validated['is_active'] ?? true,
+                'archived_at' => $archivedAt,
                 'password' => $validated['password'],
             ]);
 
@@ -3156,7 +3619,9 @@ Route::middleware('auth:sanctum')->group(function () use (
                     'email' => $user->email,
                     'student_id' => $user->student_id,
                     'role' => $user->role,
+                    'year_level' => $user->year_level,
                     'is_active' => $user->is_active,
+                    'archived_at' => $user->archived_at,
                 ],
                 $request,
             );
@@ -3182,8 +3647,10 @@ Route::middleware('auth:sanctum')->group(function () use (
                 'email' => ['sometimes', 'required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
                 'student_id' => ['sometimes', 'nullable', 'string', 'max:32', 'regex:/^\d{7,20}$/', Rule::unique('users', 'student_id')->ignore($user->id)],
                 'role' => ['sometimes', 'required', Rule::in(User::ROLES)],
+                'year_level' => ['sometimes', 'nullable', 'integer', Rule::in(User::YEAR_LEVELS)],
                 'is_active' => ['sometimes', 'required', 'boolean'],
                 'password' => ['sometimes', 'required', 'string', 'min:8'],
+                'archived' => ['sometimes', 'boolean'],
             ]);
 
             if (array_key_exists('student_id', $validated)) {
@@ -3198,6 +3665,9 @@ Route::middleware('auth:sanctum')->group(function () use (
             $resolvedStudentId = array_key_exists('student_id', $validated)
                 ? $validated['student_id']
                 : $user->student_id;
+            $resolvedYearLevel = array_key_exists('year_level', $validated)
+                ? (is_null($validated['year_level']) ? null : (int) $validated['year_level'])
+                : $user->year_level;
 
             if ($resolvedRole === User::ROLE_STUDENT && blank($resolvedStudentId)) {
                 return response()->json([
@@ -3205,8 +3675,16 @@ Route::middleware('auth:sanctum')->group(function () use (
                 ], 422);
             }
 
+            if ($resolvedRole === User::ROLE_STUDENT && blank($resolvedYearLevel)) {
+                return response()->json([
+                    'message' => 'Year level is required for student accounts.',
+                ], 422);
+            }
+
             if ($resolvedRole !== User::ROLE_STUDENT) {
                 $validated['student_id'] = null;
+                $validated['year_level'] = null;
+                $validated['archived'] = false;
             }
 
             if ((int) $actor->id === (int) $user->id) {
@@ -3223,7 +3701,19 @@ Route::middleware('auth:sanctum')->group(function () use (
                 }
             }
 
-            $user->fill(collect($validated)->except(['password'])->all());
+            $fillPayload = collect($validated)->except(['password', 'archived'])->all();
+
+            if (array_key_exists('year_level', $fillPayload) && !is_null($fillPayload['year_level'])) {
+                $fillPayload['year_level'] = (int) $fillPayload['year_level'];
+            }
+
+            if (array_key_exists('archived', $validated)) {
+                $fillPayload['archived_at'] = $resolvedRole === User::ROLE_STUDENT && (bool) $validated['archived']
+                    ? ($user->archived_at ?? now())
+                    : null;
+            }
+
+            $user->fill($fillPayload);
 
             if (array_key_exists('password', $validated)) {
                 $user->password = $validated['password'];
@@ -3244,7 +3734,9 @@ Route::middleware('auth:sanctum')->group(function () use (
                 [
                     'role' => $user->role,
                     'student_id' => $user->student_id,
+                    'year_level' => $user->year_level,
                     'is_active' => $user->is_active,
+                    'archived_at' => $user->archived_at,
                     'updated_fields' => array_keys($validated),
                 ],
                 $request,
@@ -3319,7 +3811,7 @@ Route::middleware('auth:sanctum')->group(function () use (
 
             return response()->json([
                 'message' => 'Student account recovered. Email and password were updated and active sessions were revoked.',
-                'user' => $user->only(['id', 'name', 'email', 'student_id', 'role', 'is_active']),
+                'user' => $user->only(['id', 'name', 'email', 'student_id', 'role', 'year_level', 'is_active', 'archived_at']),
             ]);
         });
 
@@ -3334,7 +3826,15 @@ Route::middleware('auth:sanctum')->group(function () use (
 
             $rooms = Room::query()
                 ->with('creator:id,name,email,role')
-                ->withCount(['members', 'exams'])
+                ->withCount([
+                    'members as members_count' => fn ($query) => $query
+                        ->where('users.role', User::ROLE_STUDENT)
+                        ->whereNull('users.archived_at'),
+                    'exams as exams_count' => fn ($query) => $query
+                        ->whereNull('exam_room.archived_at'),
+                    'archivedStudentMembers as archived_members_count',
+                    'archivedExams as archived_exams_count',
+                ])
                 ->latest()
                 ->get();
 

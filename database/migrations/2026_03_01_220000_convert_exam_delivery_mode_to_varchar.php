@@ -21,6 +21,10 @@ return new class extends Migration
              END"
         );
 
+        if (Schema::getConnection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         DB::statement(
             "ALTER TABLE exams
              MODIFY COLUMN delivery_mode VARCHAR(32) NOT NULL DEFAULT 'open_navigation'"
@@ -30,6 +34,19 @@ return new class extends Migration
     public function down(): void
     {
         if (!Schema::hasColumn('exams', 'delivery_mode')) {
+            return;
+        }
+
+        if (Schema::getConnection()->getDriverName() === 'sqlite') {
+            DB::statement(
+                "UPDATE exams
+                 SET delivery_mode = CASE
+                    WHEN delivery_mode = 'teacher_paced' THEN 'live_quiz'
+                    WHEN delivery_mode = 'open_navigation' THEN 'standard'
+                    ELSE delivery_mode
+                 END"
+            );
+
             return;
         }
 
@@ -45,4 +62,3 @@ return new class extends Migration
         );
     }
 };
-

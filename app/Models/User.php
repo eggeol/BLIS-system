@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -18,6 +19,7 @@ class User extends Authenticatable
     public const ROLE_ADMIN = 'admin';
     public const ROLE_STAFF_MASTER_EXAMINER = 'staff_master_examiner';
     public const ROLE_STUDENT = 'student';
+    public const YEAR_LEVELS = [1, 2, 3, 4];
 
     public const ROLES = [
         self::ROLE_ADMIN,
@@ -38,7 +40,9 @@ class User extends Authenticatable
         'email',
         'student_id',
         'role',
+        'year_level',
         'is_active',
+        'archived_at',
         'password',
     ];
 
@@ -93,6 +97,30 @@ class User extends Authenticatable
     }
 
     /**
+     * Limit the query to student accounts.
+     */
+    public function scopeStudents(Builder $query): Builder
+    {
+        return $query->where('role', self::ROLE_STUDENT);
+    }
+
+    /**
+     * Limit the query to current student accounts.
+     */
+    public function scopeCurrentStudents(Builder $query): Builder
+    {
+        return $query->students()->whereNull('archived_at');
+    }
+
+    /**
+     * Limit the query to archived student accounts.
+     */
+    public function scopeArchivedStudents(Builder $query): Builder
+    {
+        return $query->students()->whereNotNull('archived_at');
+    }
+
+    /**
      * Exam attempts taken by this user.
      */
     public function examAttempts(): HasMany
@@ -110,6 +138,8 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'is_active' => 'boolean',
+            'year_level' => 'integer',
+            'archived_at' => 'datetime',
             'password' => 'hashed',
         ];
     }

@@ -62,7 +62,7 @@ class ExamAttemptService
     public function buildAttemptPayload(ExamAttempt $attempt): array
     {
         $attempt->loadMissing([
-            'exam:id,title,subject,question_bank_id,total_items,duration_minutes,scheduled_at,schedule_start_at,schedule_end_at,delivery_mode,one_take_only,shuffle_questions',
+            'exam:id,title,subject,question_bank_id,total_items,duration_minutes,scheduled_at,schedule_start_at,schedule_end_at,delivery_mode,one_take_only,shuffle_questions,results_visibility_mode',
             'exam.questionBanks:id,title,subject,total_items',
             'room:id,name,code',
             'attemptQuestions.question.options:id,question_bank_question_id,option_label,option_text,is_correct',
@@ -77,7 +77,8 @@ class ExamAttemptService
             ->all();
         $deliveryMode = $this->deliveryModeService->normalize($attempt->exam?->delivery_mode);
         $isSubmitted = $attempt->status === ExamAttempt::STATUS_SUBMITTED;
-        $showPerQuestionFeedback = $isSubmitted;
+        $visibilityMode = $attempt->exam?->results_visibility_mode ?? 'hidden';
+        $showPerQuestionFeedback = $isSubmitted && $visibilityMode === 'visible';
         $answersByQuestionId = $attempt->answers->keyBy('question_bank_question_id');
 
         $questions = $attempt->attemptQuestions
@@ -107,14 +108,14 @@ class ExamAttemptService
                         'id' => $option->id,
                         'label' => $option->option_label,
                         'text' => $option->option_text,
-                        'is_correct' => $isSubmitted ? (bool) $option->is_correct : null,
+                        'is_correct' => $showPerQuestionFeedback ? (bool) $option->is_correct : null,
                     ])->values(),
                     'answer' => [
                         'selected_option_id' => $answer?->question_bank_option_id,
                         'answer_text' => $answer?->answer_text,
                         'is_correct' => $showPerQuestionFeedback && $hasAnswer ? $answer?->is_correct : null,
                     ],
-                    'correct_answer' => $isSubmitted
+                    'correct_answer' => $showPerQuestionFeedback
                         ? [
                             'label' => $question->answer_label,
                             'text' => $question->answer_text,
@@ -169,6 +170,7 @@ class ExamAttemptService
                 'delivery_mode' => $deliveryMode,
                 'one_take_only' => (bool) ($attempt->exam?->one_take_only ?? false),
                 'shuffle_questions' => (bool) ($attempt->exam?->shuffle_questions ?? false),
+                'results_visibility_mode' => $attempt->exam?->results_visibility_mode ?? 'hidden',
             ],
             'room' => [
                 'id' => $attempt->room?->id ?? $attempt->room_id,

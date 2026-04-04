@@ -9,6 +9,21 @@ function firstApiError(error, fallbackMessage) {
   return error?.response?.data?.message ?? fallbackMessage
 }
 
+function numericValue(value) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function formatPercent(value, fallback = 'N/A') {
+  const numeric = numericValue(value)
+  if (numeric === null) return fallback
+
+  return `${new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(numeric)}%`
+}
+
 function extractDownloadFilename(contentDisposition, fallbackName) {
   if (typeof contentDisposition !== 'string' || contentDisposition.trim() === '') {
     return fallbackName
@@ -71,15 +86,21 @@ export function useReportsModule() {
   const auth = useAuthStore()
   const services = useDashboardDataServices()
 
-  const normalizedRole = computed(() => String(auth.user?.role ?? 'student').toLowerCase())
-  const isStaffRole = computed(() => ['staff_master_examiner', 'faculty'].includes(normalizedRole.value))
+  const isStaffRole = computed(() => ['staff_master_examiner'].includes(String(auth.user?.role ?? 'student').toLowerCase()))
 
   const reportLoading = ref(false)
   const reportError = ref('')
   const reportMetrics = ref({})
   const reportActivity = ref([])
+  const reportSessionPerformance = ref([])
+  const reportSubjectPerformance = ref([])
   const reportTargetsLoading = ref(false)
   const reportStudentsLoading = ref(false)
+
+  const itemAnalyticsData = ref([])
+  const itemAnalyticsLoading = ref(false)
+  const itemAnalyticsError = ref('')
+  const itemAnalyticsExamId = ref('')
   const reportExportingKey = ref('')
   const reportExportError = ref('')
   const reportExportMessage = ref('')
@@ -129,6 +150,22 @@ export function useReportsModule() {
         trend: `${data.exam_assignments ?? 0} assignments`,
         positive: true,
         tone: 'gold',
+        icon: FileText,
+      },
+      {
+        label: 'Completion Rate',
+        value: formatPercent(data.completion_rate_percent),
+        trend: `${data.attempts_submitted ?? 0} completed of ${data.session_enrollments ?? 0} expected`,
+        positive: Number(data.completion_rate_percent ?? 0) >= 60,
+        tone: 'success',
+        icon: DoorOpen,
+      },
+      {
+        label: 'Average Score',
+        value: formatPercent(data.average_score_percent),
+        trend: `${formatPercent(data.pass_rate_percent)} pass rate`,
+        positive: Number(data.average_score_percent ?? 0) >= 75,
+        tone: 'navy',
         icon: FileText,
       },
     ]
@@ -329,6 +366,8 @@ export function useReportsModule() {
       const { data } = await services.getReportsOverview()
       reportMetrics.value = data.metrics ?? {}
       reportActivity.value = data.recent_activity ?? []
+      reportSessionPerformance.value = data.session_performance ?? []
+      reportSubjectPerformance.value = data.subject_performance ?? []
     } catch (error) {
       reportError.value = firstApiError(error, 'Unable to load report data.')
     } finally {
@@ -365,6 +404,24 @@ export function useReportsModule() {
     },
   )
 
+  watch(itemAnalyticsExamId, async (newId) => {
+    if (!newId) {
+      itemAnalyticsData.value = []
+      return
+    }
+    itemAnalyticsLoading.value = true
+    itemAnalyticsError.value = ''
+    try {
+      const { data } = await services.getItemAnalytics(Number(newId))
+      itemAnalyticsData.value = data.item_analytics ?? []
+    } catch (error) {
+      itemAnalyticsData.value = []
+      itemAnalyticsError.value = firstApiError(error, 'Unable to fetch item difficulty data.')
+    } finally {
+      itemAnalyticsLoading.value = false
+    }
+  })
+
   onMounted(async () => {
     await refreshAll()
   })
@@ -374,6 +431,8 @@ export function useReportsModule() {
     reportError,
     reportMetrics,
     reportActivity,
+    reportSessionPerformance,
+    reportSubjectPerformance,
     reportTargetsLoading,
     reportStudentsLoading,
     reportExportingKey,
@@ -386,10 +445,16 @@ export function useReportsModule() {
     canExportSessionReports,
     canExportSingleStudentReport,
     reportMetricCards,
+    formatPercent,
     loadReports,
     loadReportExportTargets,
     exportReport,
     sendReportEmail,
     refreshAll,
+    
+    itemAnalyticsData,
+    itemAnalyticsLoading,
+    itemAnalyticsError,
+    itemAnalyticsExamId,
   }
 }

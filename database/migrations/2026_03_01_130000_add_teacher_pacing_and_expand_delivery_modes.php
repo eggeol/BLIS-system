@@ -13,15 +13,23 @@ return new class extends Migration
     public function up(): void
     {
         if (Schema::hasColumn('exams', 'delivery_mode')) {
-            DB::statement(
-                "ALTER TABLE exams MODIFY COLUMN delivery_mode ENUM(
-                    'open_navigation',
-                    'teacher_paced',
-                    'instant_feedback',
-                    'standard',
-                    'live_quiz'
-                ) NOT NULL DEFAULT 'open_navigation'"
-            );
+            if (Schema::getConnection()->getDriverName() === 'sqlite') {
+                Schema::table('exams', function (Blueprint $table) {
+                    $table->string('delivery_mode', 32)
+                        ->default('open_navigation')
+                        ->change();
+                });
+            } else {
+                DB::statement(
+                    "ALTER TABLE exams MODIFY COLUMN delivery_mode ENUM(
+                        'open_navigation',
+                        'teacher_paced',
+                        'instant_feedback',
+                        'standard',
+                        'live_quiz'
+                    ) NOT NULL DEFAULT 'open_navigation'"
+                );
+            }
         }
 
         if (!Schema::hasTable('exam_room_pacing_states')) {
@@ -64,12 +72,20 @@ return new class extends Migration
                  END"
             );
 
-            DB::statement(
-                "ALTER TABLE exams MODIFY COLUMN delivery_mode ENUM(
-                    'standard',
-                    'live_quiz'
-                ) NOT NULL DEFAULT 'standard'"
-            );
+            if (Schema::getConnection()->getDriverName() === 'sqlite') {
+                Schema::table('exams', function (Blueprint $table) {
+                    $table->string('delivery_mode', 32)
+                        ->default('standard')
+                        ->change();
+                });
+            } else {
+                DB::statement(
+                    "ALTER TABLE exams MODIFY COLUMN delivery_mode ENUM(
+                        'standard',
+                        'live_quiz'
+                    ) NOT NULL DEFAULT 'standard'"
+                );
+            }
         }
     }
 };

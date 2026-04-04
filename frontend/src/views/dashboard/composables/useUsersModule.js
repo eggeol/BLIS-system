@@ -2,7 +2,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useAuthStore } from '@/store/auth.store'
 import { useDashboardDataServices } from './useDashboardDataServices'
 
-const USERS_DEFAULT_PAGE_SIZE = 50
+const USERS_DEFAULT_PAGE_SIZE = 200
 
 function firstApiError(error, fallbackMessage) {
   const messages = Object.values(error?.response?.data?.errors ?? {}).flat()
@@ -15,6 +15,36 @@ function displayMemberRole(role) {
   if (normalized === 'admin') return 'Administrator'
   if (normalized === 'staff_master_examiner') return 'Staff / Master Examiner'
   return 'Student'
+}
+
+function yearLevelLabel(value) {
+  const numeric = Number(value)
+  if (numeric === 1) return '1st Year'
+  if (numeric === 2) return '2nd Year'
+  if (numeric === 3) return '3rd Year'
+  if (numeric === 4) return '4th Year'
+  return 'Year level not set'
+}
+
+function compareUsersForDirectory(left, right) {
+  const nameCompare = String(left?.name ?? '').localeCompare(String(right?.name ?? ''), undefined, {
+    sensitivity: 'base',
+  })
+
+  if (nameCompare !== 0) {
+    return nameCompare
+  }
+
+  const studentIdCompare = String(left?.student_id ?? '').localeCompare(String(right?.student_id ?? ''), undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+
+  if (studentIdCompare !== 0) {
+    return studentIdCompare
+  }
+
+  return Number(left?.id ?? 0) - Number(right?.id ?? 0)
 }
 
 export function useUsersModule() {
@@ -37,6 +67,8 @@ export function useUsersModule() {
     search: '',
     role: '',
     status: '',
+    year_level: '',
+    archive_state: 'current',
   })
   const usersPagination = reactive({
     current_page: 1,
@@ -57,9 +89,18 @@ export function useUsersModule() {
     email: '',
     student_id: '',
     role: 'student',
+    year_level: '1',
     is_active: true,
+    archived: false,
     password: '',
   })
+
+  const yearLevelOptions = [
+    { value: '1', label: '1st Year' },
+    { value: '2', label: '2nd Year' },
+    { value: '3', label: '3rd Year' },
+    { value: '4', label: '4th Year' },
+  ]
 
   let usersFilterSearchDebounce = null
 
@@ -76,6 +117,110 @@ export function useUsersModule() {
 
     return `Showing ${from}-${to} of ${total} users`
   })
+  const sortedAdminUsers = computed(() => (
+    [...adminUsers.value].sort(compareUsersForDirectory)
+  ))
+  const currentStudentUsers = computed(() => (
+    sortedAdminUsers.value.filter((user) => String(user?.role ?? '').toLowerCase() === 'student' && !isUserArchived(user))
+  ))
+  const archivedStudentUsers = computed(() => (
+    sortedAdminUsers.value.filter((user) => String(user?.role ?? '').toLowerCase() === 'student' && isUserArchived(user))
+  ))
+  const managementUsers = computed(() => (
+    sortedAdminUsers.value.filter((user) => String(user?.role ?? '').toLowerCase() !== 'student')
+  ))
+  const currentStudentYearGroups = computed(() => {
+    const groups = yearLevelOptions
+      .map((option) => {
+        const users = currentStudentUsers.value.filter((user) => String(user?.year_level ?? '') === option.value)
+
+        return {
+          key: `year-${option.value}`,
+          label: option.label,
+          count: users.length,
+          users,
+        }
+      })
+      .filter((group) => group.count > 0)
+
+    const unassignedUsers = currentStudentUsers.value.filter((user) => !['1', '2', '3', '4'].includes(String(user?.year_level ?? '')))
+
+    if (unassignedUsers.length > 0) {
+      groups.push({
+        key: 'year-unassigned',
+        label: 'Year Level Not Set',
+        count: unassignedUsers.length,
+        users: unassignedUsers,
+      })
+    }
+
+    return groups
+  })
+  const archivedStudentYearGroups = computed(() => {
+    const groups = yearLevelOptions
+      .map((option) => {
+        const users = archivedStudentUsers.value.filter((user) => String(user?.year_level ?? '') === option.value)
+
+        return {
+          key: `archived-year-${option.value}`,
+          label: option.label,
+          count: users.length,
+          users,
+        }
+      })
+      .filter((group) => group.count > 0)
+
+    const unassignedUsers = archivedStudentUsers.value.filter((user) => !['1', '2', '3', '4'].includes(String(user?.year_level ?? '')))
+
+    if (unassignedUsers.length > 0) {
+      groups.push({
+        key: 'archived-year-unassigned',
+        label: 'Year Level Not Set',
+        count: unassignedUsers.length,
+        users: unassignedUsers,
+      })
+    }
+
+    return groups
+  })
+  const managementAccountGroups = computed(() => ([
+    {
+      key: 'staff-accounts',
+      label: 'Staff / Master Examiners',
+      users: managementUsers.value.filter((user) => String(user?.role ?? '').toLowerCase() === 'staff_master_examiner'),
+    },
+    {
+      key: 'admin-accounts',
+      label: 'Administrators',
+      users: managementUsers.value.filter((user) => String(user?.role ?? '').toLowerCase() === 'admin'),
+    },
+  ].filter((group) => group.users.length > 0)))
+  const userDirectorySummary = computed(() => ([
+    {
+      key: 'current-students',
+      label: 'Current Students',
+      value: currentStudentUsers.value.length,
+      tone: 'success',
+    },
+    {
+      key: 'archived-students',
+      label: 'Archived Records',
+      value: archivedStudentUsers.value.length,
+      tone: 'neutral',
+    },
+    {
+      key: 'staff-admin',
+      label: 'Staff and Admin',
+      value: managementUsers.value.length,
+      tone: 'navy',
+    },
+    {
+      key: 'inactive',
+      label: 'Inactive Accounts',
+      value: sortedAdminUsers.value.filter((user) => !Boolean(user?.is_active)).length,
+      tone: 'danger',
+    },
+  ]))
 
   function resetUserForm() {
     userForm.id = null
@@ -83,7 +228,9 @@ export function useUsersModule() {
     userForm.email = ''
     userForm.student_id = ''
     userForm.role = 'student'
+    userForm.year_level = '1'
     userForm.is_active = true
+    userForm.archived = false
     userForm.password = ''
   }
 
@@ -100,7 +247,9 @@ export function useUsersModule() {
     userForm.email = user.email ?? ''
     userForm.student_id = user.student_id ?? ''
     userForm.role = user.role ?? 'student'
+    userForm.year_level = user.year_level ? String(user.year_level) : '1'
     userForm.is_active = Boolean(user.is_active)
+    userForm.archived = Boolean(user.archived_at)
     userForm.password = ''
     usersError.value = ''
     usersMessage.value = ''
@@ -155,6 +304,8 @@ export function useUsersModule() {
       if (userFilters.search.trim()) params.search = userFilters.search.trim()
       if (userFilters.role) params.role = userFilters.role
       if (userFilters.status) params.status = userFilters.status
+      if (userFilters.year_level) params.year_level = userFilters.year_level
+      if (userFilters.archive_state) params.archive_state = userFilters.archive_state
 
       const { data } = await services.getUsers(params)
       adminUsers.value = data.users ?? []
@@ -189,6 +340,11 @@ export function useUsersModule() {
       return
     }
 
+    if (userForm.role === 'student' && !['1', '2', '3', '4'].includes(String(userForm.year_level))) {
+      usersError.value = 'Select a valid year level for student accounts.'
+      return
+    }
+
     usersSaving.value = true
     usersError.value = ''
     usersMessage.value = ''
@@ -198,7 +354,9 @@ export function useUsersModule() {
       email: userForm.email.trim(),
       student_id: userForm.role === 'student' ? (userForm.student_id.trim() || null) : null,
       role: userForm.role,
+      year_level: userForm.role === 'student' ? Number(userForm.year_level) : null,
       is_active: Boolean(userForm.is_active),
+      archived: userForm.role === 'student' ? Boolean(userForm.archived) : false,
     }
 
     if (userForm.password.trim()) {
@@ -263,8 +421,48 @@ export function useUsersModule() {
     }
   }
 
+  function isUserArchived(user) {
+    return Boolean(user?.archived_at)
+  }
+
+  async function handleToggleUserArchive(user, shouldArchive) {
+    if (!isAdminRole.value) return
+    if (String(user?.role ?? '').toLowerCase() !== 'student') return
+
+    const userId = Number(user?.id ?? 0)
+    if (!Number.isFinite(userId) || userId < 1) return
+
+    const userName = String(user?.name ?? 'this student').trim() || 'this student'
+    const actionLabel = shouldArchive ? 'archive' : 'restore'
+
+    if (typeof window !== 'undefined') {
+      const confirmed = window.confirm(`${shouldArchive ? 'Archive' : 'Restore'} ${userName}?`)
+      if (!confirmed) return
+    }
+
+    usersSaving.value = true
+    usersError.value = ''
+    usersMessage.value = ''
+
+    try {
+      if (shouldArchive) {
+        await services.archiveUser(userId)
+        usersMessage.value = `${userName} moved to archived student records.`
+      } else {
+        await services.restoreUser(userId)
+        usersMessage.value = `${userName} restored to current student records.`
+      }
+
+      await loadAdminUsers({ page: usersPagination.current_page })
+    } catch (error) {
+      usersError.value = firstApiError(error, `Unable to ${actionLabel} the student record.`)
+    } finally {
+      usersSaving.value = false
+    }
+  }
+
   watch(
-    () => [userFilters.role, userFilters.status],
+    () => [userFilters.role, userFilters.status, userFilters.year_level, userFilters.archive_state],
     async () => {
       if (!isAdminRole.value) return
       await loadAdminUsers({ page: 1 })
@@ -316,7 +514,14 @@ export function useUsersModule() {
     canGoToPreviousUsersPage,
     canGoToNextUsersPage,
     usersRangeLabel,
+    currentStudentYearGroups,
+    archivedStudentYearGroups,
+    managementAccountGroups,
+    userDirectorySummary,
     displayMemberRole,
+    yearLevelLabel,
+    yearLevelOptions,
+    isUserArchived,
     openCreateUserModal,
     openEditUserModal,
     closeUserModal,
@@ -324,6 +529,7 @@ export function useUsersModule() {
     closeRecoverUserModal,
     loadAdminUsers,
     handleSaveUser,
+    handleToggleUserArchive,
     handleRecoverUserAccount,
   }
 }

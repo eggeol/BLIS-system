@@ -142,10 +142,7 @@ async function handleSubmit() {
   min-height: 100dvh;
   display: grid;
   grid-template-columns: minmax(320px, 460px) 1fr;
-  background:
-    radial-gradient(circle at 12% 8%, rgba(26, 35, 126, 0.12), transparent 30%),
-    radial-gradient(circle at 88% 92%, rgba(201, 168, 76, 0.25), transparent 34%),
-    var(--lnu-bg);
+  background: #f8f9fa;
 }
 
 .auth-brand {
@@ -227,9 +224,7 @@ async function handleSubmit() {
   align-items: center;
   justify-content: center;
   padding: 42px 24px;
-  background:
-    radial-gradient(circle at top right, rgba(26, 35, 126, 0.12), transparent 40%),
-    radial-gradient(circle at bottom left, rgba(201, 168, 76, 0.2), transparent 42%);
+  background: transparent;
 }
 
 .auth-card {
@@ -243,7 +238,7 @@ async function handleSubmit() {
 }
 
 .auth-header h2 {
-  margin: 6px 0 4px;
+  margin: 6px 0 10px;
   font-size: 28px;
   line-height: 1.2;
   color: var(--lnu-text);
@@ -323,7 +318,7 @@ async function handleSubmit() {
 }
 
 .field-input::placeholder {
-  color: var(--lnu-gray-dark);
+  color: rgba(13, 21, 71, 0.55);
 }
 
 .field-input-with-toggle {
@@ -401,8 +396,8 @@ async function handleSubmit() {
 
 .submit-btn:hover:not(:disabled) {
   background: var(--lnu-navy-light);
-  box-shadow: 0 10px 18px rgba(26, 35, 126, 0.25);
-  transform: translateY(-1px);
+  box-shadow: 0 12px 20px rgba(26, 35, 126, 0.35);
+  transform: translateY(-2px);
 }
 
 .submit-btn:disabled {

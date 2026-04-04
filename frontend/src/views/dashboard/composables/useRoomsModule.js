@@ -22,6 +22,90 @@ function displayMemberRole(role) {
   return 'Student'
 }
 
+function yearLevelLabel(value) {
+  const numeric = Number(value)
+  if (numeric === 1) return '1st Year'
+  if (numeric === 2) return '2nd Year'
+  if (numeric === 3) return '3rd Year'
+  if (numeric === 4) return '4th Year'
+  return 'Unassigned Year'
+}
+
+function normalizeRoomMember(member) {
+  return {
+    ...member,
+    year_level_label: yearLevelLabel(member?.year_level),
+  }
+}
+
+function normalizeRoomExam(exam) {
+  return {
+    ...exam,
+    schedule_start_at: exam?.schedule_start_at ?? exam?.scheduled_at ?? null,
+    schedule_end_at: exam?.schedule_end_at ?? null,
+    delivery_mode: normalizeExamDeliveryMode(exam?.delivery_mode),
+    room_assignment_archived: Boolean(exam?.room_assignment_archived ?? exam?.room_archived_at),
+  }
+}
+
+function compareRoomMembers(left, right) {
+  const nameCompare = String(left?.name ?? '').localeCompare(String(right?.name ?? ''), undefined, {
+    sensitivity: 'base',
+  })
+
+  if (nameCompare !== 0) {
+    return nameCompare
+  }
+
+  const studentIdCompare = String(left?.student_id ?? '').localeCompare(String(right?.student_id ?? ''), undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+
+  if (studentIdCompare !== 0) {
+    return studentIdCompare
+  }
+
+  return Number(left?.id ?? 0) - Number(right?.id ?? 0)
+}
+
+function sortRoomMembers(members) {
+  return [...members].sort(compareRoomMembers)
+}
+
+function buildRoomYearSummary(members) {
+  const normalizedYearLevels = Array.from(new Set(
+    members
+      .map((member) => Number(member?.year_level))
+      .filter((yearLevel) => Number.isFinite(yearLevel) && yearLevel > 0),
+  )).sort((left, right) => left - right)
+
+  if (normalizedYearLevels.length === 0) {
+    return {
+      count: 0,
+      primary_year_level: null,
+      label: 'Year level not set',
+      is_mixed: false,
+    }
+  }
+
+  if (normalizedYearLevels.length === 1) {
+    return {
+      count: 1,
+      primary_year_level: normalizedYearLevels[0],
+      label: yearLevelLabel(normalizedYearLevels[0]),
+      is_mixed: false,
+    }
+  }
+
+  return {
+    count: normalizedYearLevels.length,
+    primary_year_level: normalizedYearLevels[0],
+    label: 'Mixed Year Levels',
+    is_mixed: true,
+  }
+}
+
 function splitQuestionStemAndNumberedItems(questionText) {
   const normalized = String(questionText ?? '').replace(/\s+/g, ' ').trim()
   if (!normalized) {
@@ -148,7 +232,7 @@ export function useRoomsModule({ mode = 'student' } = {}) {
 
   const normalizedRole = computed(() => String(auth.user?.role ?? 'student').toLowerCase())
   const isAdminRole = computed(() => normalizedRole.value === 'admin')
-  const isStaffRole = computed(() => ['staff_master_examiner', 'faculty'].includes(normalizedRole.value))
+  const isStaffRole = computed(() => ['staff_master_examiner'].includes(normalizedRole.value))
   const isManagementRole = computed(() => isAdminRole.value || isStaffRole.value)
   const canCreateRooms = computed(() => isStaffRole.value)
   const canViewExamResults = computed(() => isStaffRole.value)
@@ -157,6 +241,40 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     if (isAdminRole.value) return 'All rooms in the platform'
     if (isManagementRole.value) return "Rooms you've added"
     return 'Rooms joined'
+  })
+
+  const selectedRoomActiveExams = computed(() => (
+    Array.isArray(selectedRoom.value?.assigned_exams) ? selectedRoom.value.assigned_exams : []
+  ))
+
+  const selectedRoomArchivedExams = computed(() => (
+    Array.isArray(selectedRoom.value?.archived_exams) ? selectedRoom.value.archived_exams : []
+  ))
+
+  const selectedRoomCurrentMembers = computed(() => (
+    sortRoomMembers(Array.isArray(selectedRoom.value?.members) ? selectedRoom.value.members : [])
+  ))
+
+  const selectedRoomYearSummary = computed(() => (
+    buildRoomYearSummary(selectedRoomCurrentMembers.value)
+  ))
+
+  const selectedRoomRosterCopy = computed(() => {
+    if (!selectedRoom.value) return ''
+
+    if (selectedRoomCurrentMembers.value.length === 0) {
+      return 'No current students are enrolled in this room yet.'
+    }
+
+    if (selectedRoomYearSummary.value.is_mixed) {
+      return 'This roster currently includes more than one year level.'
+    }
+
+    if (selectedRoomYearSummary.value.primary_year_level) {
+      return `This room is currently organized as a ${selectedRoomYearSummary.value.label} section.`
+    }
+
+    return 'Year level tags are not set for this room yet.'
   })
 
   const currentStudentExamQuestion = computed(() => (
@@ -350,6 +468,7 @@ export function useRoomsModule({ mode = 'student' } = {}) {
 
   function canStudentTakeExam(exam) {
     if (!exam?.question_bank_id) return false
+    if (exam?.room_assignment_archived) return false
 
     const now = Date.now()
     const scheduleStart = parseDateTime(examScheduleStart(exam))
@@ -380,6 +499,10 @@ export function useRoomsModule({ mode = 'student' } = {}) {
   }
 
   function canStudentOpenExam(exam) {
+    if (exam?.room_assignment_archived) {
+      return isStudentExamInProgress(exam) || Boolean(studentSubmittedAttemptId(exam))
+    }
+
     if (isStudentExamRetakeLimitReached(exam) && studentSubmittedAttemptId(exam)) {
       return true
     }
@@ -388,6 +511,12 @@ export function useRoomsModule({ mode = 'student' } = {}) {
   }
 
   function studentExamActionLabel(exam) {
+    if (exam?.room_assignment_archived) {
+      if (isStudentExamInProgress(exam)) return 'Resume Attempt'
+      if (studentSubmittedAttemptId(exam)) return 'Review Result'
+      return 'Archived'
+    }
+
     if (isStudentExamInProgress(exam)) return 'Resume Exam'
     if (isStudentExamCompleted(exam)) {
       return isStudentExamRetakeLimitReached(exam) ? 'Review Result' : 'Retake Exam'
@@ -398,6 +527,12 @@ export function useRoomsModule({ mode = 'student' } = {}) {
 
   function studentExamAvailabilityText(exam) {
     if (!exam?.question_bank_id) return 'Not available (no question set linked)'
+
+    if (exam?.room_assignment_archived) {
+      if (isStudentExamInProgress(exam)) return 'Archived from the current room view, but your in-progress attempt can still be resumed'
+      if (studentSubmittedAttemptId(exam)) return 'Archived from the current room view'
+      return 'Archived from the current room view'
+    }
 
     const now = Date.now()
     const scheduleStart = parseDateTime(examScheduleStart(exam))
@@ -436,6 +571,28 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     }
 
     return 'Available now'
+  }
+
+  async function exportRoomGrades() {
+    if (!selectedRoom.value) return
+    roomDetailsLoading.value = true
+    try {
+      const response = await services.exportRoomGradesCsv(selectedRoom.value.id)
+      const blob = new Blob([response.data], { type: 'text/csv' })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      const code = String(selectedRoom.value.code || '').trim()
+      link.download = `room-${code || selectedRoom.value.id}-grades.csv`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (e) {
+      roomError.value = firstApiError(e, 'Failed to export room grades.')
+    } finally {
+      roomDetailsLoading.value = false
+    }
   }
 
   function clearStudentExamTimer() {
@@ -692,39 +849,42 @@ export function useRoomsModule({ mode = 'student' } = {}) {
   }
 
   function syncSelectedRoomAssignedExam(examPayload, attemptPayload) {
-    if (!selectedRoom.value || !Array.isArray(selectedRoom.value.assigned_exams)) return
+    if (!selectedRoom.value) return
 
     const examId = Number(examPayload?.id ?? 0)
     if (!Number.isFinite(examId) || examId < 1) return
 
+    const patchExamCollection = (collection = []) => collection.map((exam) => {
+      if (Number(exam.id) !== examId) {
+        return exam
+      }
+
+      const maxAttempts = Number(exam.student_max_attempts ?? studentMaxAttempts(exam))
+      const currentSubmittedAttempts = Number(exam.student_submitted_attempts ?? 0)
+      const wasAlreadySubmitted = String(exam.student_attempt_state ?? '').toLowerCase() === 'submitted'
+      const nextSubmittedAttempts = attemptPayload?.status === 'submitted'
+        ? Math.max(currentSubmittedAttempts + (wasAlreadySubmitted ? 0 : 1), currentSubmittedAttempts || 1)
+        : currentSubmittedAttempts
+      const attemptsRemaining = Math.max(0, maxAttempts - nextSubmittedAttempts)
+
+      return {
+        ...exam,
+        ...examPayload,
+        delivery_mode: normalizeExamDeliveryMode(examPayload?.delivery_mode ?? exam.delivery_mode),
+        student_attempt_state: attemptPayload?.status ?? exam.student_attempt_state ?? 'not_started',
+        student_attempt_id: attemptPayload?.id ?? exam.student_attempt_id ?? null,
+        student_submitted_at: attemptPayload?.submitted_at ?? exam.student_submitted_at ?? null,
+        student_submitted_attempts: nextSubmittedAttempts,
+        student_max_attempts: maxAttempts,
+        student_attempts_remaining: attemptsRemaining,
+        student_can_start_attempt: !exam.room_assignment_archived && attemptsRemaining > 0,
+      }
+    })
+
     selectedRoom.value = {
       ...selectedRoom.value,
-      assigned_exams: selectedRoom.value.assigned_exams.map((exam) => {
-        if (Number(exam.id) !== examId) {
-          return exam
-        }
-
-        const maxAttempts = Number(exam.student_max_attempts ?? studentMaxAttempts(exam))
-        const currentSubmittedAttempts = Number(exam.student_submitted_attempts ?? 0)
-        const wasAlreadySubmitted = String(exam.student_attempt_state ?? '').toLowerCase() === 'submitted'
-        const nextSubmittedAttempts = attemptPayload?.status === 'submitted'
-          ? Math.max(currentSubmittedAttempts + (wasAlreadySubmitted ? 0 : 1), currentSubmittedAttempts || 1)
-          : currentSubmittedAttempts
-        const attemptsRemaining = Math.max(0, maxAttempts - nextSubmittedAttempts)
-
-        return {
-          ...exam,
-          ...examPayload,
-          delivery_mode: normalizeExamDeliveryMode(examPayload?.delivery_mode ?? exam.delivery_mode),
-          student_attempt_state: attemptPayload?.status ?? exam.student_attempt_state ?? 'not_started',
-          student_attempt_id: attemptPayload?.id ?? exam.student_attempt_id ?? null,
-          student_submitted_at: attemptPayload?.submitted_at ?? exam.student_submitted_at ?? null,
-          student_submitted_attempts: nextSubmittedAttempts,
-          student_max_attempts: maxAttempts,
-          student_attempts_remaining: attemptsRemaining,
-          student_can_start_attempt: attemptsRemaining > 0,
-        }
-      }),
+      assigned_exams: patchExamCollection(selectedRoom.value.assigned_exams ?? []),
+      archived_exams: patchExamCollection(selectedRoom.value.archived_exams ?? []),
     }
   }
 
@@ -733,6 +893,7 @@ export function useRoomsModule({ mode = 'student' } = {}) {
 
     const reviewOnlyMode = isStudentExamRetakeLimitReached(exam)
     const submittedAttemptId = studentSubmittedAttemptId(exam)
+    const archivedReviewMode = Boolean(exam?.room_assignment_archived) && Boolean(submittedAttemptId) && !isStudentExamInProgress(exam)
 
     selectedStudentExam.value = {
       ...exam,
@@ -743,10 +904,12 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     studentExamLoading.value = true
 
     try {
-      if (reviewOnlyMode && submittedAttemptId) {
+      if ((reviewOnlyMode || archivedReviewMode) && submittedAttemptId) {
         const { data } = await services.getAttempt(submittedAttemptId)
         applyStudentAttemptPayload(data)
-        roomMessage.value = 'Reviewing your submitted attempt.'
+        roomMessage.value = exam?.room_assignment_archived
+          ? 'Reviewing an archived room exam attempt.'
+          : 'Reviewing your submitted attempt.'
         return
       }
 
@@ -1057,13 +1220,10 @@ export function useRoomsModule({ mode = 'student' } = {}) {
       selectedRoom.value = room
         ? {
             ...room,
-            members: room.members ?? [],
-            assigned_exams: (room.assigned_exams ?? []).map((exam) => ({
-              ...exam,
-              schedule_start_at: exam.schedule_start_at ?? exam.scheduled_at ?? null,
-              schedule_end_at: exam.schedule_end_at ?? null,
-              delivery_mode: normalizeExamDeliveryMode(exam.delivery_mode),
-            })),
+            members: (room.members ?? []).map(normalizeRoomMember),
+            archived_members: (room.archived_members ?? []).map(normalizeRoomMember),
+            assigned_exams: (room.assigned_exams ?? []).map(normalizeRoomExam),
+            archived_exams: (room.archived_exams ?? []).map(normalizeRoomExam),
           }
         : null
 
@@ -1090,7 +1250,13 @@ export function useRoomsModule({ mode = 'student' } = {}) {
 
     try {
       const { data } = await services.getRooms()
-      rooms.value = data.rooms ?? []
+      rooms.value = (data.rooms ?? []).map((room) => ({
+        ...room,
+        members_count: Number(room.members_count ?? 0),
+        archived_members_count: Number(room.archived_members_count ?? 0),
+        exams_count: Number(room.exams_count ?? 0),
+        archived_exams_count: Number(room.archived_exams_count ?? 0),
+      }))
 
       if (rooms.value.length === 0) {
         showJoinRoomModal.value = false
@@ -1245,6 +1411,58 @@ export function useRoomsModule({ mode = 'student' } = {}) {
       await fetchRooms(selectedRoomId.value)
     } catch (error) {
       roomError.value = firstApiError(error, 'Unable to remove student from this room right now.')
+    } finally {
+      roomLoading.value = false
+    }
+  }
+
+  async function handleArchiveRoomExam(exam) {
+    if (!selectedRoomId.value || !isManagementRole.value) return
+
+    const examId = Number(exam?.id ?? 0)
+    if (!Number.isFinite(examId) || examId < 1) return
+
+    const examTitle = String(exam?.title ?? 'this exam').trim() || 'this exam'
+    const roomNameLabel = String(selectedRoom.value?.name ?? 'this room').trim() || 'this room'
+
+    if (typeof window !== 'undefined') {
+      const confirmed = window.confirm(`Archive ${examTitle} from ${roomNameLabel}?`)
+      if (!confirmed) return
+    }
+
+    roomLoading.value = true
+    roomError.value = ''
+    roomMessage.value = ''
+
+    try {
+      const { data } = await services.archiveRoomExam(selectedRoomId.value, examId)
+      roomMessage.value = data?.message ?? `${examTitle} archived from the room.`
+      await fetchRooms(selectedRoomId.value)
+    } catch (error) {
+      roomError.value = firstApiError(error, 'Unable to archive this room exam right now.')
+    } finally {
+      roomLoading.value = false
+    }
+  }
+
+  async function handleRestoreRoomExam(exam) {
+    if (!selectedRoomId.value || !isManagementRole.value) return
+
+    const examId = Number(exam?.id ?? 0)
+    if (!Number.isFinite(examId) || examId < 1) return
+
+    const examTitle = String(exam?.title ?? 'this exam').trim() || 'this exam'
+
+    roomLoading.value = true
+    roomError.value = ''
+    roomMessage.value = ''
+
+    try {
+      const { data } = await services.restoreRoomExam(selectedRoomId.value, examId)
+      roomMessage.value = data?.message ?? `${examTitle} restored to the current room view.`
+      await fetchRooms(selectedRoomId.value)
+    } catch (error) {
+      roomError.value = firstApiError(error, 'Unable to restore this room exam right now.')
     } finally {
       roomLoading.value = false
     }
@@ -1480,6 +1698,11 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     studentExamRemainingSeconds,
     studentAnswerDraft,
     roomCollectionLabel,
+    selectedRoomActiveExams,
+    selectedRoomArchivedExams,
+    selectedRoomCurrentMembers,
+    selectedRoomYearSummary,
+    selectedRoomRosterCopy,
     currentStudentExamQuestion,
     currentQuestionStem,
     isStudentExamSubmitted,
@@ -1489,6 +1712,7 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     studentExamUnansweredCount,
     studentExamResultSummary,
     displayMemberRole,
+    yearLevelLabel,
     canRemoveRoomMember,
     canStudentOpenExam,
     isStudentExamInProgress,
@@ -1534,6 +1758,8 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     handleJoinRoom,
     handleLeaveRoom,
     handleKickRoomMember,
+    handleArchiveRoomExam,
+    handleRestoreRoomExam,
     openRoomLiveBoard,
     closeRoomLiveBoard,
     loadLiveBoard,
@@ -1542,5 +1768,6 @@ export function useRoomsModule({ mode = 'student' } = {}) {
     liveBoardCellText,
     liveBoardCellClass,
     liveBoardItemSummaryText,
+    exportRoomGrades,
   }
 }

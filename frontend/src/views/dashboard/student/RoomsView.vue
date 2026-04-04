@@ -52,6 +52,7 @@
               </div>
               <div class="room-meta">
                 <small>{{ room.members_count ?? 0 }} members</small>
+                <small v-if="room.archived_exams_count">{{ room.archived_exams_count }} archived exam(s)</small>
                 <small v-if="room.creator?.name">By {{ room.creator.name }}</small>
               </div>
             </button>
@@ -85,13 +86,13 @@
             <div class="room-detail-grid">
               <article class="detail-card">
                 <header class="room-section-head">
-                  <h5>Exams</h5>
+                  <h5>Current Exams</h5>
                 </header>
 
-                <p v-if="selectedRoom.assigned_exams.length === 0" class="muted empty-detail">No exams assigned to this room yet.</p>
+                <p v-if="selectedRoomActiveExams.length === 0" class="muted empty-detail">No active exams assigned to this room right now.</p>
                 <div v-else class="exam-card-grid">
                   <article
-                    v-for="exam in selectedRoom.assigned_exams"
+                    v-for="exam in selectedRoomActiveExams"
                     :key="exam.id"
                     class="exam-card"
                     :class="{ locked: !canStudentOpenExam(exam) }"
@@ -117,26 +118,76 @@
                     </button>
                   </article>
                 </div>
+
+                <details v-if="selectedRoomArchivedExams.length > 0" class="surface-card collapsible-card room-archive-card">
+                  <summary class="collapsible-summary">
+                    <div>
+                      <strong>Archived Exams</strong>
+                      <p class="muted">Past room exams kept without crowding the current list.</p>
+                    </div>
+                    <div class="collapsible-summary-meta">
+                      <span class="pill neutral">{{ selectedRoomArchivedExams.length }} archived</span>
+                      <ChevronDown :size="16" class="collapsible-icon" />
+                    </div>
+                  </summary>
+
+                  <div class="collapsible-content">
+                    <div class="exam-card-grid">
+                      <article
+                        v-for="exam in selectedRoomArchivedExams"
+                        :key="`archived-${exam.id}`"
+                        class="exam-card archived-card"
+                        :class="{ locked: !canStudentOpenExam(exam) }"
+                      >
+                        <div>
+                          <strong class="exam-card-title">{{ exam.title }}</strong>
+                          <p class="exam-card-meta">{{ exam.total_items }} items • {{ exam.duration_minutes }} mins</p>
+                          <p class="exam-card-date">{{ studentExamAvailabilityText(exam) }}</p>
+                        </div>
+                        <button
+                          v-if="canStudentOpenExam(exam)"
+                          type="button"
+                          class="ghost-btn"
+                          @click="openExamSimulation(exam)"
+                        >
+                          {{ studentExamActionLabel(exam) }}
+                        </button>
+                      </article>
+                    </div>
+                  </div>
+                </details>
               </article>
 
               <article class="detail-card">
                 <header class="room-section-head">
-                  <h5>In Room</h5>
+                  <h5>Class Roster</h5>
                 </header>
 
-                <p v-if="selectedRoom.members.length === 0" class="muted empty-detail">No members enrolled yet.</p>
-                <ul v-else class="member-list">
-                  <li v-for="member in selectedRoom.members" :key="member.id" class="member-item">
-                    <span class="member-avatar">
-                      <UserRound :size="16" />
-                    </span>
-                    <div class="member-info">
-                      <strong>{{ member.name }}</strong>
-                      <p>{{ member.email }}</p>
-                    </div>
-                    <span class="pill neutral">{{ displayMemberRole(member.role) }}</span>
-                  </li>
-                </ul>
+                <div class="management-inline">
+                  <span class="pill success">{{ selectedRoom.members_count ?? selectedRoom.members.length }} current</span>
+                  <span class="pill navy">{{ selectedRoomYearSummary.label }}</span>
+                </div>
+
+                <p class="muted room-roster-copy">{{ selectedRoomRosterCopy }}</p>
+
+                <p v-if="selectedRoomCurrentMembers.length === 0" class="muted empty-detail">
+                  No members enrolled yet.
+                </p>
+
+                <div v-if="selectedRoomCurrentMembers.length > 0" class="room-roster-shell">
+                  <div class="room-roster-grid">
+                    <article v-for="member in selectedRoomCurrentMembers" :key="member.id" class="room-roster-card">
+                      <div class="room-roster-card-copy">
+                        <strong>{{ member.name }}</strong>
+                        <p v-if="member.student_id">Student ID: {{ member.student_id }}</p>
+                        <p v-else>{{ member.email }}</p>
+                      </div>
+                      <div v-if="selectedRoomYearSummary.is_mixed" class="room-roster-card-actions">
+                        <span class="pill navy">{{ member.year_level_label || yearLevelLabel(member.year_level) }}</span>
+                      </div>
+                    </article>
+                  </div>
+                </div>
               </article>
             </div>
           </template>
@@ -600,11 +651,11 @@ import {
   Bookmark,
   BookmarkCheck,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   DoorOpen,
   LogOut,
   RefreshCw,
-  UserRound,
   X,
 } from 'lucide-vue-next'
 import { examDeliveryModeLabel, formatRemainingDuration } from '../composables/useDashboardFormatters'
@@ -636,6 +687,11 @@ const {
   studentExamError,
   studentExamRemainingSeconds,
   studentAnswerDraft,
+  selectedRoomActiveExams,
+  selectedRoomArchivedExams,
+  selectedRoomCurrentMembers,
+  selectedRoomYearSummary,
+  selectedRoomRosterCopy,
   currentStudentExamQuestion,
   currentQuestionStem,
   isStudentExamSubmitted,
@@ -644,7 +700,7 @@ const {
   isCurrentQuestionInputLocked,
   studentExamUnansweredCount,
   studentExamResultSummary,
-  displayMemberRole,
+  yearLevelLabel,
   canStudentOpenExam,
   isStudentExamInProgress,
   isStudentExamCompleted,

@@ -23,6 +23,7 @@ class ReportExportService
         $students = $room->members()
             ->select('users.id', 'users.name', 'users.email', 'users.student_id', 'users.role')
             ->where('users.role', User::ROLE_STUDENT)
+            ->whereNull('users.archived_at')
             ->orderBy('users.name')
             ->get();
 
@@ -423,6 +424,7 @@ class ReportExportService
     {
         $studentIds = $room->members()
             ->where('users.role', User::ROLE_STUDENT)
+            ->whereNull('users.archived_at')
             ->pluck('users.id')
             ->map(fn ($id) => (int) $id)
             ->all();

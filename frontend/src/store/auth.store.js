@@ -15,12 +15,13 @@ export const useAuthStore = defineStore('auth', () => {
     initialized.value = true
   }
 
-  async function register(first_name, middle_name, last_name, student_id, email, password, password_confirmation, agreed) {
+  async function register(first_name, middle_name, last_name, student_id, year_level, email, password, password_confirmation, agreed) {
     const { data } = await authApi.register({
       first_name,
       middle_name,
       last_name,
       student_id,
+      year_level,
       email,
       password,
       password_confirmation,

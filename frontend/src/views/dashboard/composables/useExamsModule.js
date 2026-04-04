@@ -133,6 +133,7 @@ export function useExamsModule() {
     schedule_end_at: '',
     one_take_only: false,
     shuffle_questions: false,
+    results_visibility_mode: 'hidden',
     room_ids: [],
   })
 
@@ -202,6 +203,7 @@ export function useExamsModule() {
     examForm.schedule_end_at = ''
     examForm.one_take_only = false
     examForm.shuffle_questions = false
+    examForm.results_visibility_mode = 'hidden'
     examForm.room_ids = []
   }
 
@@ -225,6 +227,7 @@ export function useExamsModule() {
     examForm.schedule_end_at = toDateTimeLocalValue(exam.schedule_end_at)
     examForm.one_take_only = Boolean(exam.one_take_only)
     examForm.shuffle_questions = Boolean(exam.shuffle_questions)
+    examForm.results_visibility_mode = exam.results_visibility_mode || 'hidden'
     examForm.room_ids = (exam.rooms ?? []).map((room) => room.id)
     examError.value = ''
     examMessage.value = ''
@@ -291,6 +294,7 @@ export function useExamsModule() {
             ...exam,
             question_banks: linkedBanks,
             question_bank_ids: linkedBanks.map((bank) => bank.id),
+            archived_rooms: Array.isArray(exam.archived_rooms) ? exam.archived_rooms : [],
             subject: exam.subject ?? summarizeQuestionBankSubject(linkedBanks),
             schedule_start_at: exam.schedule_start_at ?? exam.scheduled_at ?? null,
             schedule_end_at: exam.schedule_end_at ?? null,
@@ -372,6 +376,7 @@ export function useExamsModule() {
       schedule_end_at: scheduleEndAt,
       one_take_only: Boolean(examForm.one_take_only),
       shuffle_questions: Boolean(examForm.shuffle_questions),
+      results_visibility_mode: examForm.results_visibility_mode,
       room_ids: [...examForm.room_ids],
     }
 
