@@ -3,10 +3,18 @@ import { useAuthStore } from '@/store/auth.store'
 import {
   formatClockTime,
   formatDateTime,
-  formatExamSchedule,
   normalizeExamDeliveryMode,
-  parseDateTime,
 } from './useDashboardFormatters'
+import {
+  canStudentOpenExam,
+  isStudentExamCompleted,
+  isStudentExamInProgress,
+  isStudentExamRetakeLimitReached,
+  studentExamActionLabel,
+  studentExamAvailabilityText,
+  studentMaxAttempts,
+  studentSubmittedAttemptId,
+} from './studentExamAvailability'
 import { useDashboardDataServices } from './useDashboardDataServices'
 
 function firstApiError(error, fallbackMessage) {
@@ -65,14 +73,6 @@ function splitQuestionStemAndNumberedItems(questionText) {
     leadText,
     numberedItems: parsedItems.map((item) => item.text),
   }
-}
-
-function examScheduleStart(exam) {
-  return exam?.schedule_start_at ?? exam?.scheduled_at ?? null
-}
-
-function examScheduleEnd(exam) {
-  return exam?.schedule_end_at ?? null
 }
 
 export function useRoomsModule({ mode = 'student' } = {}) {
@@ -318,124 +318,6 @@ export function useRoomsModule({ mode = 'student' } = {}) {
 
     const memberRole = String(member?.role ?? '').toLowerCase()
     return memberRole === 'student'
-  }
-
-  function studentMaxAttempts(exam) {
-    const resolvedMaxAttempts = Number(exam?.student_max_attempts)
-
-    if (Number.isFinite(resolvedMaxAttempts) && resolvedMaxAttempts > 0) {
-      return resolvedMaxAttempts
-    }
-
-    return exam?.one_take_only ? 1 : 2
-  }
-
-  function studentSubmittedAttempts(exam) {
-    const submittedAttempts = Number(exam?.student_submitted_attempts)
-
-    if (Number.isFinite(submittedAttempts) && submittedAttempts >= 0) {
-      return submittedAttempts
-    }
-
-    return isStudentExamCompleted(exam) ? 1 : 0
-  }
-
-  function studentAttemptsRemaining(exam) {
-    return Math.max(0, studentMaxAttempts(exam) - studentSubmittedAttempts(exam))
-  }
-
-  function isStudentExamRetakeLimitReached(exam) {
-    return isStudentExamCompleted(exam) && studentAttemptsRemaining(exam) <= 0
-  }
-
-  function canStudentTakeExam(exam) {
-    if (!exam?.question_bank_id) return false
-
-    const now = Date.now()
-    const scheduleStart = parseDateTime(examScheduleStart(exam))
-    const scheduleEnd = parseDateTime(examScheduleEnd(exam))
-
-    if (scheduleStart && scheduleStart.getTime() > now) return false
-    if (scheduleEnd && scheduleEnd.getTime() < now) return false
-    if (isStudentExamRetakeLimitReached(exam)) return false
-
-    return true
-  }
-
-  function studentExamAttemptState(exam) {
-    return String(exam?.student_attempt_state ?? 'not_started').toLowerCase()
-  }
-
-  function isStudentExamInProgress(exam) {
-    return studentExamAttemptState(exam) === 'in_progress'
-  }
-
-  function isStudentExamCompleted(exam) {
-    return studentExamAttemptState(exam) === 'submitted'
-  }
-
-  function studentSubmittedAttemptId(exam) {
-    const attemptId = Number(exam?.student_attempt_id ?? 0)
-    return Number.isFinite(attemptId) && attemptId > 0 ? attemptId : null
-  }
-
-  function canStudentOpenExam(exam) {
-    if (isStudentExamRetakeLimitReached(exam) && studentSubmittedAttemptId(exam)) {
-      return true
-    }
-
-    return canStudentTakeExam(exam)
-  }
-
-  function studentExamActionLabel(exam) {
-    if (isStudentExamInProgress(exam)) return 'Resume Exam'
-    if (isStudentExamCompleted(exam)) {
-      return isStudentExamRetakeLimitReached(exam) ? 'Review Result' : 'Retake Exam'
-    }
-
-    return 'Take Exam'
-  }
-
-  function studentExamAvailabilityText(exam) {
-    if (!exam?.question_bank_id) return 'Not available (no question set linked)'
-
-    const now = Date.now()
-    const scheduleStart = parseDateTime(examScheduleStart(exam))
-    const scheduleEnd = parseDateTime(examScheduleEnd(exam))
-
-    if (scheduleStart && scheduleStart.getTime() > now) {
-      return `Available on ${formatExamSchedule(examScheduleStart(exam), examScheduleEnd(exam))}`
-    }
-
-    if (scheduleEnd && scheduleEnd.getTime() < now) {
-      return `Window ended on ${formatDateTime(examScheduleEnd(exam))}`
-    }
-
-    if (isStudentExamRetakeLimitReached(exam)) {
-      return studentMaxAttempts(exam) === 1
-        ? 'Completed (review only)'
-        : 'Retake limit reached (review only)'
-    }
-
-    if (isStudentExamInProgress(exam)) {
-      return 'In progress (resume anytime)'
-    }
-
-    if (isStudentExamCompleted(exam)) {
-      const remaining = studentAttemptsRemaining(exam)
-
-      if (remaining === 1) {
-        return '1 retake remaining'
-      }
-
-      return `Available for retake (${remaining} attempts left)`
-    }
-
-    if (scheduleEnd) {
-      return `Available until ${formatDateTime(examScheduleEnd(exam))}`
-    }
-
-    return 'Available now'
   }
 
   function clearStudentExamTimer() {

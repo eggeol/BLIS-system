@@ -4,88 +4,114 @@
       <CheckCircle2 :size="15" />
       <span>{{ reviewMessage }}</span>
     </div>
+
     <div v-if="reviewError" class="feedback danger">
       <AlertCircle :size="15" />
       <span>{{ reviewError }}</span>
     </div>
 
-    <article class="surface-card review-bot-hero">
-      <div class="review-bot-hero-copy">
-        <span class="review-bot-kicker">Review Bot</span>
-        <h3>Generate a fresh practice set from your teacher library</h3>
-        <p>
-          Pick your subjects, choose how many items you want, and Review Bot will build a rewritten quiz
-          so you can practice the same ideas without seeing the exact exam wording.
-        </p>
-      </div>
-
-      <div class="review-bot-hero-meta">
-        <span class="pill success">Student Practice</span>
-        <span class="pill neutral">{{ subjectOptions.length }} subjects ready</span>
-      </div>
+    <article class="surface-card review-bot-head">
+      <p class="review-bot-kicker">Review Bot</p>
+      <h3>BLIS Core Review Bot</h3>
+      <p>Choose subjects and number of items, then generate your quiz.</p>
     </article>
 
     <div class="review-bot-layout">
       <article class="surface-card review-bot-setup">
-        <header class="surface-head">
-          <h3>Build My Review Set</h3>
-          <span class="pill navy">{{ form.questionCount }} questions</span>
+        <header class="review-section-head">
+          <h3>Setup</h3>
+          <span class="pill navy">{{ form.questionCount }} items</span>
         </header>
 
-        <section class="review-bot-section">
-          <label class="field-stack">
-            <span class="field-label">How many questions do you want to answer?</span>
-            <input v-model.number="form.questionCount" type="number" min="3" max="30" class="text-input" />
-            <small class="muted">Choose between 3 and 30 questions.</small>
-          </label>
+        <section class="review-field">
+          <div class="review-field-head">
+            <strong>Subjects</strong>
 
-          <div class="review-count-chips">
-            <button
-              v-for="count in questionCountOptions"
-              :key="count"
-              type="button"
-              class="review-count-chip"
-              :class="{ active: form.questionCount === count }"
-              @click="setQuestionCount(count)"
-            >
-              {{ count }} items
-            </button>
-          </div>
-        </section>
-
-        <section class="review-bot-section">
-          <div class="review-bot-section-head">
-            <div>
-              <h4>Subjects to review</h4>
-              <p>Choose one or more subject areas from the teacher question library.</p>
+            <div class="review-field-actions">
+              <button type="button" class="ghost-btn review-small-btn" :disabled="reviewLoading" @click="selectAllSubjects">
+                All
+              </button>
+              <button
+                type="button"
+                class="ghost-btn review-small-btn"
+                :disabled="reviewLoading || form.subjects.length === 0"
+                @click="clearSelectedSubjects"
+              >
+                Clear
+              </button>
             </div>
-            <span class="pill neutral">{{ form.subjects.length }} selected</span>
           </div>
 
           <div v-if="reviewLoading" class="review-bot-empty compact">
             <RefreshCw :size="18" class="spin-soft" />
-            <p>Loading subjects from the teacher library...</p>
+            <p>Loading subjects...</p>
           </div>
 
           <div v-else-if="subjectOptions.length === 0" class="review-bot-empty compact">
-            <BookOpen :size="22" />
-            <p>No teacher question banks are available yet.</p>
+            <BookOpen :size="20" />
+            <p>No subjects available.</p>
           </div>
 
           <div v-else class="review-subject-grid">
-            <label
+            <button
               v-for="subject in subjectOptions"
               :key="subject.subject"
+              type="button"
               class="review-subject-chip"
-              :class="{ 'is-selected': form.subjects.includes(subject.subject) }"
+              :class="[
+                `tone-${subjectToneKey(subject.subject)}`,
+                { 'is-selected': form.subjects.includes(subject.subject) },
+              ]"
+              @click="toggleSubject(subject.subject)"
             >
-              <input v-model="form.subjects" type="checkbox" :value="subject.subject" />
-              <span class="review-subject-copy">
-                <strong>{{ subject.subject }}</strong>
-                <small>{{ subject.question_count }} questions across {{ subject.bank_count }} bank(s)</small>
-              </span>
+              {{ shortSubjectLabel(subject.subject) }}
+            </button>
+          </div>
+        </section>
+
+        <section class="review-field">
+          <div class="review-field-head">
+            <strong>Items</strong>
+          </div>
+
+          <div class="review-count-row">
+            <div class="review-count-chips">
+              <button
+                v-for="count in questionCountOptions"
+                :key="count"
+                type="button"
+                class="review-count-chip"
+                :class="{ active: form.questionCount === count }"
+                @click="setQuestionCount(count)"
+              >
+                {{ count }}
+              </button>
+            </div>
+
+            <label class="field-stack review-count-field">
+              <span class="field-label">Custom</span>
+              <input v-model.number="form.questionCount" type="number" min="3" max="30" class="text-input" />
             </label>
           </div>
+        </section>
+
+        <section class="review-field">
+          <div class="review-field-head">
+            <strong>Selected</strong>
+          </div>
+
+          <div v-if="selectedSubjects.length > 0" class="review-selected-list">
+            <span
+              v-for="subject in selectedSubjects"
+              :key="subject.subject"
+              class="review-selected-chip"
+              :class="`tone-${subjectToneKey(subject.subject)}`"
+            >
+              {{ shortSubjectLabel(subject.subject) }}
+            </span>
+          </div>
+
+          <p v-else class="review-muted">No subjects selected yet.</p>
         </section>
 
         <div class="review-bot-actions">
@@ -96,110 +122,127 @@
             @click="generateQuiz"
           >
             <Sparkles :size="16" />
-            {{ quizLoading ? 'Generating...' : 'Generate Review Set' }}
+            {{ quizLoading ? 'Generating...' : 'Generate Quiz' }}
           </button>
+
           <button v-if="hasQuiz" type="button" class="ghost-btn" :disabled="quizLoading" @click="resetQuizState">
-            Clear Set
+            Clear Quiz
           </button>
         </div>
       </article>
 
       <article class="surface-card review-bot-session">
-        <header class="surface-head">
-          <h3>{{ hasQuiz ? 'Practice Set' : 'Generated Quiz' }}</h3>
-          <div class="management-inline">
-            <span v-if="hasQuiz" class="pill success">{{ generatorLabel }}</span>
-            <span v-if="hasQuiz" class="pill neutral">{{ answeredCount }}/{{ generatedQuestions.length }} answered</span>
+        <header class="review-section-head">
+          <h3>Quiz</h3>
+
+          <div class="review-session-pills">
+            <span class="pill neutral">{{ selectedSubjects.length }} subjects</span>
+            <span class="pill gold">{{ form.questionCount }} items</span>
+            <span v-if="hasQuiz" class="pill navy">{{ answeredCount }}/{{ generatedQuestions.length }} answered</span>
           </div>
         </header>
 
-        <div v-if="quizLoading" class="review-bot-empty">
-          <RefreshCw :size="22" class="spin-soft" />
-          <h4>Building your review set</h4>
-          <p>Review Bot is remixing teacher questions into a fresh practice quiz.</p>
-        </div>
+        <div class="review-session-body">
+          <div v-if="quizLoading" class="review-bot-empty">
+            <RefreshCw :size="22" class="spin-soft" />
+            <h4>Generating quiz</h4>
+            <p>Please wait.</p>
+          </div>
 
-        <div v-else-if="!hasQuiz" class="review-bot-empty">
-          <Sparkles :size="26" />
-          <h4>Your quiz will appear here</h4>
-          <p>Select subjects, choose a question count, and generate a review set to begin.</p>
-        </div>
+          <div v-else-if="!hasQuiz" class="review-bot-empty">
+            <Sparkles :size="24" />
+            <h4>No quiz yet</h4>
+            <p>Generate a set to start.</p>
+          </div>
 
-        <template v-else>
-          <div v-if="quizSubmitted" class="review-bot-results">
-            <div class="review-bot-score" :class="{ strong: scorePercent >= 75, focus: scorePercent < 75 }">
-              <strong>{{ scorePercent }}%</strong>
-              <span>{{ correctCount }} / {{ generatedQuestions.length }} correct</span>
+          <template v-else>
+            <div class="review-session-top">
+              <div class="review-session-status">
+                <span class="review-session-label">Progress</span>
+                <strong>{{ answeredCount }} of {{ generatedQuestions.length }}</strong>
+                <span>{{ quizSubmitted ? 'Checked' : 'Submit anytime' }}</span>
+              </div>
+
+              <div v-if="quizSubmitted" class="review-bot-results">
+                <div class="review-bot-score" :class="scoreToneClass(scorePercent)">
+                  <span class="review-score-kicker">Score</span>
+                  <strong>{{ scorePercent }}%</strong>
+                  <span>{{ correctCount }} / {{ generatedQuestions.length }} correct</span>
+                </div>
+
+                <button type="button" class="ghost-btn" :disabled="quizLoading" @click="generateQuiz">
+                  <RefreshCw :size="15" />
+                  New Quiz
+                </button>
+              </div>
             </div>
 
-            <button type="button" class="ghost-btn" :disabled="quizLoading" @click="generateQuiz">
-              <RefreshCw :size="15" />
-              Generate Another Set
-            </button>
-          </div>
+            <div class="review-question-scroll">
+              <div class="review-question-list">
+                <article v-for="(question, index) in generatedQuestions" :key="question.id" class="review-question-card">
+                  <div class="review-question-head">
+                    <div>
+                      <span class="review-question-number">Question {{ index + 1 }}</span>
+                      <span class="review-question-subject" :class="`tone-${subjectToneKey(question.subject)}`">
+                        {{ shortSubjectLabel(question.subject) }}
+                      </span>
+                    </div>
 
-          <div class="review-question-list">
-            <article v-for="(question, index) in generatedQuestions" :key="question.id" class="review-question-card">
-              <div class="review-question-head">
-                <span class="review-question-number">Question {{ index + 1 }}</span>
-                <span class="pill neutral">{{ question.subject }}</span>
+                    <span v-if="quizSubmitted" class="pill" :class="questionResultClass(question)">
+                      {{ questionResultLabel(question) }}
+                    </span>
+                  </div>
+
+                  <p class="review-question-text">{{ question.prompt }}</p>
+
+                  <div class="review-option-list">
+                    <label
+                      v-for="option in question.options"
+                      :key="option.id"
+                      class="review-option"
+                      :class="{
+                        'is-selected': answers[question.id] === option.id,
+                        'is-correct': quizSubmitted && option.id === question.correct_option_id,
+                        'is-incorrect': quizSubmitted && answers[question.id] === option.id && option.id !== question.correct_option_id,
+                      }"
+                    >
+                      <input
+                        :checked="answers[question.id] === option.id"
+                        type="radio"
+                        :name="`review-question-${question.id}`"
+                        :value="option.id"
+                        :disabled="quizSubmitted"
+                        @change="answerQuestion(question.id, option.id)"
+                      />
+                      <span>{{ option.text }}</span>
+                    </label>
+                  </div>
+
+                  <div v-if="quizSubmitted" class="review-explanation">
+                    <strong>{{ questionResultLabel(question) }}</strong>
+                    <p>{{ question.explanation }}</p>
+                  </div>
+                </article>
               </div>
+            </div>
 
-              <p class="review-question-text">{{ question.prompt }}</p>
+            <footer class="review-bot-footer">
+              <button
+                v-if="!quizSubmitted"
+                type="button"
+                class="primary-btn"
+                :disabled="quizLoading"
+                @click="submitQuiz"
+              >
+                Submit Quiz
+              </button>
 
-              <div class="review-option-list">
-                <label
-                  v-for="option in question.options"
-                  :key="option.id"
-                  class="review-option"
-                  :class="{
-                    'is-selected': answers[question.id] === option.id,
-                    'is-correct': quizSubmitted && option.id === question.correct_option_id,
-                    'is-incorrect': quizSubmitted && answers[question.id] === option.id && option.id !== question.correct_option_id,
-                  }"
-                >
-                  <input
-                    :checked="answers[question.id] === option.id"
-                    type="radio"
-                    :name="`review-question-${question.id}`"
-                    :value="option.id"
-                    :disabled="quizSubmitted"
-                    @change="answerQuestion(question.id, option.id)"
-                  />
-                  <span>{{ option.text }}</span>
-                </label>
-              </div>
-
-              <div v-if="quizSubmitted" class="review-explanation">
-                <strong>{{ answers[question.id] === question.correct_option_id ? 'Correct' : 'Needs review' }}</strong>
-                <p>{{ question.explanation }}</p>
-              </div>
-            </article>
-          </div>
-
-          <footer class="review-bot-footer">
-            <p>
-              {{
-                quizSubmitted
-                  ? 'Use the explanations to review the concepts you missed before generating another set.'
-                  : 'Answer every question, then submit to reveal your score and explanations.'
-              }}
-            </p>
-
-            <button
-              v-if="!quizSubmitted"
-              type="button"
-              class="primary-btn"
-              :disabled="quizLoading || !allAnswered"
-              @click="submitQuiz"
-            >
-              Submit Review Set
-            </button>
-            <button v-else type="button" class="ghost-btn" @click="resetQuizState">
-              Start Fresh
-            </button>
-          </footer>
-        </template>
+              <button v-else type="button" class="ghost-btn" @click="resetQuizState">
+                Start Again
+              </button>
+            </footer>
+          </template>
+        </div>
       </article>
     </div>
   </section>
@@ -215,24 +258,66 @@ const {
   quizLoading,
   reviewError,
   reviewMessage,
-  generatorLabel,
   quizSubmitted,
   generatedQuestions,
   answers,
   form,
   questionCountOptions,
+  selectedSubjects,
   hasQuiz,
   canGenerate,
   answeredCount,
-  allAnswered,
   correctCount,
   scorePercent,
   setQuestionCount,
+  toggleSubject,
+  selectAllSubjects,
+  clearSelectedSubjects,
   answerQuestion,
   submitQuiz,
   generateQuiz,
   resetQuizState,
 } = useReviewBotModule()
+
+const subjectToneLookup = {
+  'Cataloging and Classification': 'cataloging',
+  'Indexing and Abstracting': 'indexing',
+  'Information Technology': 'technology',
+  'Reference Services': 'reference',
+  'Library Management': 'management',
+  'Selection and Acquisition': 'acquisition',
+}
+
+const shortSubjectLookup = {
+  'Cataloging and Classification': 'Cataloging',
+  'Indexing and Abstracting': 'Indexing',
+  'Information Technology': 'IT',
+  'Reference Services': 'Reference',
+  'Library Management': 'Management',
+  'Selection and Acquisition': 'Acquisition',
+}
+
+function subjectToneKey(subject) {
+  return subjectToneLookup[subject] ?? 'cataloging'
+}
+
+function shortSubjectLabel(subject) {
+  return shortSubjectLookup[subject] ?? subject
+}
+
+function scoreToneClass(score) {
+  if (score >= 85) return 'strong'
+  if (score >= 75) return 'steady'
+  return 'focus'
+}
+
+function questionResultLabel(question) {
+  return answers[question.id] === question.correct_option_id ? 'Correct' : 'Review'
+}
+
+function questionResultClass(question) {
+  return answers[question.id] === question.correct_option_id ? 'success' : 'gold'
+}
 </script>
 
 <style scoped src="../dashboard.css"></style>
@@ -243,111 +328,148 @@ const {
   gap: 16px;
 }
 
-.review-bot-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 22px;
-  border: 1px solid rgba(13, 21, 71, 0.12);
-  background:
-    radial-gradient(circle at top right, rgba(201, 168, 76, 0.24), transparent 28%),
-    linear-gradient(135deg, rgba(26, 35, 126, 0.08), rgba(255, 255, 255, 0.98) 62%);
-}
-
-.review-bot-hero-copy {
+.review-bot-head {
   display: grid;
   gap: 8px;
-  max-width: 64ch;
+  background: #f4f7ff;
+  border-color: rgba(31, 65, 143, 0.18);
 }
 
 .review-bot-kicker {
+  margin: 0;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--lnu-navy);
+  color: #234a9c;
 }
 
-.review-bot-hero-copy h3 {
+.review-bot-head h3 {
   margin: 0;
-  font-size: clamp(28px, 4vw, 38px);
-  line-height: 1.05;
   color: var(--lnu-navy-deep);
+  font-size: clamp(26px, 4vw, 34px);
+  line-height: 1.08;
 }
 
-.review-bot-hero-copy p {
+.review-bot-head p {
   margin: 0;
   color: var(--lnu-text-muted);
-  font-size: 15px;
-  line-height: 1.6;
-}
-
-.review-bot-hero-meta {
-  display: grid;
-  gap: 8px;
-  justify-items: end;
+  line-height: 1.55;
 }
 
 .review-bot-layout {
   display: grid;
-  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
 .review-bot-setup,
 .review-bot-session {
-  border: 1px solid rgba(13, 21, 71, 0.12);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
 }
 
 .review-bot-setup {
-  padding: 18px;
-  display: grid;
-  gap: 18px;
+  background: #fffaf0;
 }
 
 .review-bot-session {
-  padding: 18px;
-  display: grid;
-  gap: 18px;
+  background: #fcfdff;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: min(760px, calc(100vh - 220px));
 }
 
-.review-bot-section {
-  display: grid;
-  gap: 12px;
-}
-
-.review-bot-section-head {
+.review-section-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.review-bot-section-head h4 {
+.review-section-head h3 {
   margin: 0;
-  font-size: 16px;
   color: var(--lnu-navy-deep);
 }
 
-.review-bot-section-head p {
-  margin: 4px 0 0;
-  color: var(--lnu-text-muted);
-  font-size: 13px;
-  line-height: 1.45;
+.review-field {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(13, 21, 71, 0.1);
+  background: #ffffff;
 }
 
-.review-count-chips {
+.review-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-field-head strong {
+  color: var(--lnu-navy-deep);
+  font-size: 15px;
+}
+
+.review-field-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.review-small-btn {
+  height: 34px;
+  padding: 0 12px;
+}
+
+.review-subject-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.review-subject-chip,
+.review-selected-chip {
+  border-radius: 14px;
+  padding: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.review-subject-chip {
+  border: 1px solid rgba(13, 21, 71, 0.12);
+  transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.review-subject-chip:hover {
+  transform: translateY(-1px);
+}
+
+.review-subject-chip.is-selected {
+  border-color: rgba(31, 65, 143, 0.28);
+  box-shadow: 0 10px 18px rgba(16, 32, 73, 0.08);
+}
+
+.review-count-row {
+  display: grid;
+  gap: 12px;
+}
+
+.review-count-chips,
+.review-selected-list,
+.review-session-pills {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
 .review-count-chip {
-  border: 1px solid rgba(13, 21, 71, 0.12);
+  border: 1px solid rgba(23, 49, 108, 0.12);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
+  background: #ffffff;
   color: var(--lnu-text);
   padding: 8px 12px;
   font-size: 13px;
@@ -356,80 +478,100 @@ const {
 
 .review-count-chip.active,
 .review-count-chip:hover {
-  border-color: rgba(26, 35, 126, 0.24);
-  background: rgba(26, 35, 126, 0.08);
-  color: var(--lnu-navy-deep);
+  border-color: rgba(49, 92, 191, 0.2);
+  background: #dfe9ff;
+  color: #20428f;
 }
 
-.review-subject-grid {
-  display: grid;
-  gap: 10px;
+.review-count-field {
+  width: 110px;
 }
 
-.review-subject-chip {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid rgba(13, 21, 71, 0.12);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.94);
-  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
-}
-
-.review-subject-chip:hover {
-  border-color: rgba(26, 35, 126, 0.22);
-  background: rgba(255, 255, 255, 0.98);
-}
-
-.review-subject-chip.is-selected {
-  border-color: rgba(26, 35, 126, 0.28);
-  background: rgba(26, 35, 126, 0.06);
-  box-shadow: inset 0 0 0 1px rgba(26, 35, 126, 0.04);
-}
-
-.review-subject-chip input {
-  margin-top: 2px;
-  accent-color: var(--lnu-navy);
-}
-
-.review-subject-copy {
-  display: grid;
-  gap: 4px;
-}
-
-.review-subject-copy strong {
-  color: var(--lnu-text);
-  font-size: 14px;
-}
-
-.review-subject-copy small {
+.review-muted {
+  margin: 0;
   color: var(--lnu-text-muted);
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 13px;
 }
 
-.review-bot-actions {
+.review-bot-actions,
+.review-bot-results,
+.review-bot-footer {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+.review-bot-results {
+  justify-content: space-between;
+}
+
+.review-bot-footer {
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid rgba(13, 21, 71, 0.08);
+}
+
+.review-session-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: min-content minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.review-session-body > .review-bot-empty {
+  grid-row: 1 / -1;
+}
+
+.review-session-top {
+  display: grid;
+  gap: 12px;
+}
+
+.review-session-status {
+  display: grid;
+  gap: 3px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 65, 143, 0.12);
+  background: #eef3ff;
+}
+
+.review-session-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(16, 32, 73, 0.58);
+}
+
+.review-session-status strong {
+  color: var(--lnu-navy-deep);
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+.review-session-status span:last-child {
+  color: var(--lnu-text-muted);
+  font-size: 13px;
 }
 
 .review-bot-empty {
-  min-height: 240px;
+  min-height: 250px;
+  height: 100%;
   display: grid;
   place-items: center;
   text-align: center;
   gap: 8px;
   border: 1px dashed rgba(13, 21, 71, 0.18);
-  border-radius: 16px;
-  background: rgba(248, 249, 252, 0.9);
+  border-radius: 18px;
+  background: #f6f8fd;
   padding: 18px;
   color: var(--lnu-text-muted);
 }
 
 .review-bot-empty.compact {
-  min-height: 120px;
+  min-height: 110px;
 }
 
 .review-bot-empty h4,
@@ -437,35 +579,39 @@ const {
   margin: 0;
 }
 
-.review-bot-results {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
 .review-bot-score {
   display: grid;
   gap: 4px;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(247, 248, 252, 0.94);
+  padding: 16px 18px;
+  border-radius: 18px;
   border: 1px solid rgba(13, 21, 71, 0.1);
 }
 
 .review-bot-score.strong {
-  background: rgba(67, 160, 71, 0.12);
-  border-color: rgba(67, 160, 71, 0.22);
+  background: #ddf3e5;
+  border-color: rgba(63, 146, 94, 0.2);
+}
+
+.review-bot-score.steady {
+  background: #dfe9ff;
+  border-color: rgba(49, 92, 191, 0.18);
 }
 
 .review-bot-score.focus {
-  background: rgba(201, 168, 76, 0.16);
-  border-color: rgba(201, 168, 76, 0.28);
+  background: #ffefc4;
+  border-color: rgba(205, 151, 43, 0.22);
+}
+
+.review-score-kicker {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(16, 32, 73, 0.68);
 }
 
 .review-bot-score strong {
-  font-size: 32px;
+  font-size: 34px;
   line-height: 1;
   color: var(--lnu-navy-deep);
 }
@@ -473,6 +619,13 @@ const {
 .review-bot-score span {
   color: var(--lnu-text-muted);
   font-size: 13px;
+}
+
+.review-question-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
 }
 
 .review-question-list {
@@ -484,25 +637,34 @@ const {
   display: grid;
   gap: 12px;
   padding: 16px;
-  border-radius: 16px;
+  border-radius: 18px;
   border: 1px solid rgba(13, 21, 71, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 248, 244, 0.94));
+  background: #ffffff;
 }
 
 .review-question-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .review-question-number {
+  display: block;
   color: var(--lnu-text-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+.review-question-subject {
+  display: inline-flex;
+  margin-top: 8px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .review-question-text {
@@ -523,24 +685,24 @@ const {
   gap: 10px;
   padding: 11px 12px;
   border: 1px solid rgba(13, 21, 71, 0.12);
-  border-radius: 12px;
+  border-radius: 13px;
   background: rgba(255, 255, 255, 0.92);
   color: var(--lnu-text);
 }
 
 .review-option.is-selected {
-  border-color: rgba(26, 35, 126, 0.28);
-  background: rgba(26, 35, 126, 0.06);
+  border-color: rgba(31, 65, 143, 0.24);
+  background: #ebf1ff;
 }
 
 .review-option.is-correct {
-  border-color: rgba(67, 160, 71, 0.24);
-  background: rgba(67, 160, 71, 0.12);
+  border-color: rgba(63, 146, 94, 0.24);
+  background: #eef9f1;
 }
 
 .review-option.is-incorrect {
-  border-color: rgba(229, 115, 115, 0.24);
-  background: rgba(229, 115, 115, 0.12);
+  border-color: rgba(227, 105, 105, 0.24);
+  background: #fff0f0;
 }
 
 .review-option input {
@@ -552,8 +714,8 @@ const {
   display: grid;
   gap: 4px;
   padding: 12px 14px;
-  border-radius: 12px;
-  background: rgba(248, 249, 252, 0.92);
+  border-radius: 14px;
+  background: #f6f8fd;
   border: 1px solid rgba(13, 21, 71, 0.1);
 }
 
@@ -568,60 +730,77 @@ const {
   line-height: 1.5;
 }
 
-.review-bot-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  border-top: 1px solid rgba(13, 21, 71, 0.1);
-  padding-top: 16px;
+.tone-cataloging {
+  background: #e4edff;
+  color: #234a9c;
 }
 
-.review-bot-footer p {
-  margin: 0;
-  max-width: 58ch;
-  color: var(--lnu-text-muted);
-  font-size: 13px;
-  line-height: 1.5;
+.tone-indexing {
+  background: #def3f6;
+  color: #1c7286;
+}
+
+.tone-technology {
+  background: #fff0ca;
+  color: #966112;
+}
+
+.tone-reference {
+  background: #ffe6e1;
+  color: #ad5340;
+}
+
+.tone-management {
+  background: #e2f4e7;
+  color: #267242;
+}
+
+.tone-acquisition {
+  background: #f7ead8;
+  color: #83551e;
 }
 
 @media (max-width: 1100px) {
   .review-bot-layout {
     grid-template-columns: 1fr;
   }
+
+  .review-bot-session {
+    height: auto;
+  }
+
+  .review-session-body {
+    grid-template-rows: auto;
+  }
+
+  .review-question-scroll {
+    overflow: visible;
+    padding-right: 0;
+  }
 }
 
-@media (max-width: 700px) {
-  .review-bot-hero {
-    padding: 18px;
-  }
-
-  .review-bot-hero {
-    flex-direction: column;
-  }
-
-  .review-bot-hero-meta {
-    justify-items: start;
-  }
-
+@media (max-width: 720px) {
+  .review-bot-head,
   .review-bot-setup,
   .review-bot-session,
   .review-question-card {
     padding: 14px;
   }
 
-  .review-bot-results,
-  .review-bot-footer,
-  .review-bot-section-head,
+  .review-section-head,
+  .review-field-head,
   .review-question-head {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .review-bot-actions {
-    display: grid;
+  .review-subject-grid {
     grid-template-columns: 1fr;
+  }
+
+  .review-bot-actions,
+  .review-bot-footer {
+    width: 100%;
   }
 
   .review-bot-actions .primary-btn,

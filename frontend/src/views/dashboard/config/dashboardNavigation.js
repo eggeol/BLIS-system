@@ -16,7 +16,7 @@ export const dashboardModules = {
     routeName: 'dashboard-home',
     label: 'Dashboard',
     title: 'Dashboard',
-    sub: 'Your LLE review performance at a glance',
+    sub: 'See recent exams, active notices, and your current rooms in one place',
     icon: LayoutDashboard,
   },
   rooms: {
@@ -40,7 +40,7 @@ export const dashboardModules = {
     routeName: 'dashboard-review-bot',
     label: 'Review Bot',
     title: 'Review Bot',
-    sub: 'Generate AI-powered practice questions from the teacher library',
+    sub: 'Study with a BLIS tutor bot across the 6 core subjects',
     icon: Sparkles,
   },
   room: {
